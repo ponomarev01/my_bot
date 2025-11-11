@@ -3,7 +3,7 @@ import logging
 import json
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -64,11 +64,11 @@ class DailyMessageBot:
         except Exception as e:
             logging.error(f"Ошибка планировщика очистки: {e}")
 
-    async def send_welcome_message_job(self):
+    def send_welcome_message_job(self):
         """Задача для отправки приветственного сообщения"""
         logging.info("✅ Запуск отправки приветственного сообщения")
 
-    async def cleanup_messages_job(self):
+    def cleanup_messages_job(self):
         """Задача для очистки сообщений в темах"""
         logging.info("✅ Запуск очистки сообщений в темах")
 
@@ -86,7 +86,7 @@ class DailyMessageBot:
         else:
             return now >= start_time or now <= end_time
 
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def start(self, update, context):
         """Команда старт"""
         keyboard = [
             [InlineKeyboardButton("⚙️ Управление режимами", callback_data="modes")],
@@ -95,31 +95,31 @@ class DailyMessageBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text("👋 Главное меню:", reply_markup=reply_markup)
+        update.message.reply_text("👋 Главное меню:", reply_markup=reply_markup)
 
-    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def button_handler(self, update, context):
         """Обработчик кнопок"""
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         data = query.data
         
         if data == "modes":
-            await self.show_modes_menu(query)
+            self.show_modes_menu(query)
         elif data == "timers":
-            await self.show_timers_menu(query)
+            self.show_timers_menu(query)
         elif data == "status":
-            await self.show_status(query)
+            self.show_status(query)
         elif data.startswith("mode_"):
-            await self.handle_mode_change(query, data)
+            self.handle_mode_change(query, data)
         elif data.startswith("timer_"):
-            await self.handle_timer_change(query, data)
+            self.handle_timer_change(query, data)
         elif data == "back_main":
-            await self.show_main_menu(query)
+            self.show_main_menu(query)
         elif data == "back_timers":
-            await self.show_timers_menu(query)
+            self.show_timers_menu(query)
 
-    async def show_main_menu(self, query):
+    def show_main_menu(self, query):
         """Главное меню"""
         keyboard = [
             [InlineKeyboardButton("⚙️ Управление режимами", callback_data="modes")],
@@ -127,9 +127,9 @@ class DailyMessageBot:
             [InlineKeyboardButton("ℹ️ Статус", callback_data="status")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("👋 Главное меню:", reply_markup=reply_markup)
+        query.edit_message_text("👋 Главное меню:", reply_markup=reply_markup)
 
-    async def show_timers_menu(self, query):
+    def show_timers_menu(self, query):
         """Меню времени"""
         keyboard = [
             [InlineKeyboardButton(f"🕐 Приветствие: {self.welcome_time}", callback_data="timer_welcome")],
@@ -140,12 +140,12 @@ class DailyMessageBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        query.edit_message_text(
             "⏰ Настройка времени:\n\nФормат: ЧЧ:ММ (например: 22:30)",
             reply_markup=reply_markup
         )
 
-    async def show_modes_menu(self, query):
+    def show_modes_menu(self, query):
         """Меню режимов"""
         silent_status = "🔇 ВКЛ" if self.silent_mode else "🔊 ВЫКЛ"
         welcome_status = "👋 ВКЛ" if self.welcome_mode else "🚫 ВЫКЛ"
@@ -157,37 +157,37 @@ class DailyMessageBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text("⚙️ Управление режимами:", reply_markup=reply_markup)
+        query.edit_message_text("⚙️ Управление режимами:", reply_markup=reply_markup)
 
-    async def handle_timer_change(self, query, data):
+    def handle_timer_change(self, query, data):
         """Обработка изменения времени"""
         if data == "timer_welcome":
-            await query.edit_message_text(f"⏰ Введите время приветствия:\nСейчас: {self.welcome_time}\n\nПример: 09:00\n\n❌ Отмена - /cancel")
-            return "WAITING_WELCOME_TIME"
+            query.edit_message_text(f"⏰ Введите время приветствия:\nСейчас: {self.welcome_time}\n\nПример: 09:00\n\n❌ Отмена - /cancel")
+            context.user_data['waiting_welcome_time'] = True
         elif data == "timer_silent_start":
-            await query.edit_message_text(f"🔇 Введите начало тишины:\nСейчас: {self.silent_start_time}\n\nПример: 22:00\n\n❌ Отмена - /cancel")
-            return "WAITING_SILENT_START"
+            query.edit_message_text(f"🔇 Введите начало тишины:\nСейчас: {self.silent_start_time}\n\nПример: 22:00\n\n❌ Отмена - /cancel")
+            context.user_data['waiting_silent_start'] = True
         elif data == "timer_silent_end":
-            await query.edit_message_text(f"🔊 Введите конец тишины:\nСейчас: {self.silent_end_time}\n\nПример: 08:00\n\n❌ Отмена - /cancel")
-            return "WAITING_SILENT_END"
+            query.edit_message_text(f"🔊 Введите конец тишины:\nСейчас: {self.silent_end_time}\n\nПример: 08:00\n\n❌ Отмена - /cancel")
+            context.user_data['waiting_silent_end'] = True
         elif data == "timer_cleanup":
-            await query.edit_message_text(f"🗑️ Введите время очистки:\nСейчас: {self.cleanup_time}\n\nПример: 18:00\n\n❌ Отмена - /cancel")
-            return "WAITING_CLEANUP_TIME"
+            query.edit_message_text(f"🗑️ Введите время очистки:\nСейчас: {self.cleanup_time}\n\nПример: 18:00\n\n❌ Отмена - /cancel")
+            context.user_data['waiting_cleanup_time'] = True
 
-    async def handle_mode_change(self, query, data):
+    def handle_mode_change(self, query, data):
         """Обработка изменения режимов"""
         if data == "mode_silent":
             self.silent_mode = not self.silent_mode
             status = "включен" if self.silent_mode else "выключен"
-            await query.edit_message_text(f"✅ Режим тишины {status}!")
-            await self.show_modes_menu(query)
+            query.edit_message_text(f"✅ Режим тишины {status}!")
+            self.show_modes_menu(query)
         elif data == "mode_welcome":
             self.welcome_mode = not self.welcome_mode
             status = "включен" if self.welcome_mode else "выключен"
-            await query.edit_message_text(f"✅ Приветствия {status}!")
-            await self.show_modes_menu(query)
+            query.edit_message_text(f"✅ Приветствия {status}!")
+            self.show_modes_menu(query)
 
-    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def handle_text_message(self, update, context):
         """Обработка текстовых сообщений"""
         user_data = context.user_data
         text = update.message.text
@@ -195,7 +195,7 @@ class DailyMessageBot:
         # Режим тишины - ТИХОЕ удаление
         if self.is_silent_time():
             try:
-                await update.message.delete()
+                update.message.delete()
                 logging.info("✅ Сообщение удалено в режиме тишины")
             except Exception as e:
                 logging.error(f"Ошибка удаления: {e}")
@@ -203,51 +203,55 @@ class DailyMessageBot:
         
         # Отмена команды
         if text.lower() == "/cancel":
-            await update.message.reply_text("❌ Действие отменено")
-            await self.start(update, context)
+            update.message.reply_text("❌ Действие отменено")
+            self.start(update, context)
             return
         
         # Обработка ввода времени
-        if 'waiting_welcome_time' in user_data:
+        if user_data.get('waiting_welcome_time'):
             if self.validate_time(text):
                 self.welcome_time = text
                 self.schedule_welcome_message()
-                await update.message.reply_text(f"✅ Время приветствия: {text}")
-                await self.show_timers_menu_from_message(update, context)
+                update.message.reply_text(f"✅ Время приветствия: {text}")
+                self.show_timers_menu_from_message(update, context)
+                user_data.pop('waiting_welcome_time', None)
             else:
-                await update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 09:30")
+                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 09:30")
             return
         
-        elif 'waiting_silent_start' in user_data:
+        elif user_data.get('waiting_silent_start'):
             if self.validate_time(text):
                 self.silent_start_time = text
-                await update.message.reply_text(f"✅ Начало тишины: {text}")
-                await self.show_timers_menu_from_message(update, context)
+                update.message.reply_text(f"✅ Начало тишины: {text}")
+                self.show_timers_menu_from_message(update, context)
+                user_data.pop('waiting_silent_start', None)
             else:
-                await update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 22:30")
+                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 22:30")
             return
         
-        elif 'waiting_silent_end' in user_data:
+        elif user_data.get('waiting_silent_end'):
             if self.validate_time(text):
                 self.silent_end_time = text
-                await update.message.reply_text(f"✅ Конец тишины: {text}")
-                await self.show_timers_menu_from_message(update, context)
+                update.message.reply_text(f"✅ Конец тишины: {text}")
+                self.show_timers_menu_from_message(update, context)
+                user_data.pop('waiting_silent_end', None)
             else:
-                await update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 08:15")
+                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 08:15")
             return
         
-        elif 'waiting_cleanup_time' in user_data:
+        elif user_data.get('waiting_cleanup_time'):
             if self.validate_time(text):
                 self.cleanup_time = text
                 self.schedule_cleanup()
-                await update.message.reply_text(f"✅ Очистка тем: {text}")
-                await self.show_timers_menu_from_message(update, context)
+                update.message.reply_text(f"✅ Очистка тем: {text}")
+                self.show_timers_menu_from_message(update, context)
+                user_data.pop('waiting_cleanup_time', None)
             else:
-                await update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 18:30")
+                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 18:30")
             return
 
         # Если не обработано - показываем главное меню
-        await self.start(update, context)
+        self.start(update, context)
 
     def validate_time(self, time_str):
         """Проверка формата времени"""
@@ -257,7 +261,7 @@ class DailyMessageBot:
         except:
             return False
 
-    async def show_timers_menu_from_message(self, update, context):
+    def show_timers_menu_from_message(self, update, context):
         """Показать меню времени"""
         keyboard = [
             [InlineKeyboardButton(f"🕐 Приветствие: {self.welcome_time}", callback_data="timer_welcome")],
@@ -267,9 +271,9 @@ class DailyMessageBot:
             [InlineKeyboardButton("🔙 Назад", callback_data="back_main")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("⏰ Настройка времени:", reply_markup=reply_markup)
+        update.message.reply_text("⏰ Настройка времени:", reply_markup=reply_markup)
 
-    async def show_status(self, query):
+    def show_status(self, query):
         """Показать статус"""
         silent_status = "🔇 ВКЛ" if self.silent_mode else "🔊 ВЫКЛ"
         silent_active = "✅ АКТИВЕН" if self.is_silent_time() else "❌ НЕАКТИВЕН"
@@ -287,18 +291,20 @@ class DailyMessageBot:
         
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text, reply_markup=reply_markup)
+        query.edit_message_text(text, reply_markup=reply_markup)
 
 def main():
     """Запуск бота"""
     bot = DailyMessageBot()
-    application = Application.builder().token(bot.token).build()
+    
+    # Создаем updater для версии 13.15
+    updater = Updater(token=bot.token, use_context=True)
     
     # Регистрация обработчиков
-    application.add_handler(CommandHandler("start", bot.start))
-    application.add_handler(CommandHandler("cancel", bot.start))
-    application.add_handler(CallbackQueryHandler(bot.button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_text_message))
+    updater.dispatcher.add_handler(CommandHandler("start", bot.start))
+    updater.dispatcher.add_handler(CommandHandler("cancel", bot.start))
+    updater.dispatcher.add_handler(CallbackQueryHandler(bot.button_handler))
+    updater.dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, bot.handle_text_message))
     
     print("✅ Бот запущен на Render!")
     print("⏰ Время приветствия:", bot.welcome_time)
@@ -306,7 +312,8 @@ def main():
     print("🗑️ Очистка:", bot.cleanup_time)
     
     # Запуск бота
-    application.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
