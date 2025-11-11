@@ -1,12 +1,8 @@
-import os
 import logging
-import json
+import os
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-import pytz
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,52 +22,7 @@ class DailyMessageBot:
         self.welcome_time = "09:00"
         self.cleanup_time = "18:00"
         self.welcome_mode = True
-        self.daily_messages = {}
-        self.topics_to_clean = []
-        self.scheduler = BackgroundScheduler(timezone=pytz.UTC)
-        self.setup_schedulers()
         
-    def setup_schedulers(self):
-        """Настройка планировщиков"""
-        if self.welcome_mode and self.daily_messages:
-            self.schedule_welcome_message()
-        self.schedule_cleanup()
-        self.scheduler.start()
-
-    def schedule_welcome_message(self):
-        """Планировщик для приветственных сообщений"""
-        try:
-            welcome_hour, welcome_minute = map(int, self.welcome_time.split(':'))
-            self.scheduler.add_job(
-                self.send_welcome_message_job,
-                CronTrigger(hour=welcome_hour, minute=welcome_minute),
-                id='welcome_message'
-            )
-            logging.info(f"✅ Приветствие запланировано на {self.welcome_time}")
-        except Exception as e:
-            logging.error(f"Ошибка планировщика приветствий: {e}")
-
-    def schedule_cleanup(self):
-        """Планировщик для очистки тем"""
-        try:
-            cleanup_hour, cleanup_minute = map(int, self.cleanup_time.split(':'))
-            self.scheduler.add_job(
-                self.cleanup_messages_job,
-                CronTrigger(hour=cleanup_hour, minute=cleanup_minute),
-                id='cleanup'
-            )
-            logging.info(f"✅ Очистка запланирована на {self.cleanup_time}")
-        except Exception as e:
-            logging.error(f"Ошибка планировщика очистки: {e}")
-
-    def send_welcome_message_job(self):
-        """Задача для отправки приветственного сообщения"""
-        logging.info("✅ Запуск отправки приветственного сообщения")
-
-    def cleanup_messages_job(self):
-        """Задача для очистки сообщений в темах"""
-        logging.info("✅ Запуск очистки сообщений в темах")
-
     def is_silent_time(self):
         """Проверка, сейчас время режима тишины"""
         if not self.silent_mode:
@@ -116,8 +67,6 @@ class DailyMessageBot:
             self.handle_timer_change(query, data)
         elif data == "back_main":
             self.show_main_menu(query)
-        elif data == "back_timers":
-            self.show_timers_menu(query)
 
     def show_main_menu(self, query):
         """Главное меню"""
@@ -140,10 +89,7 @@ class DailyMessageBot:
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        query.edit_message_text(
-            "⏰ Настройка времени:\n\nФормат: ЧЧ:ММ (например: 22:30)",
-            reply_markup=reply_markup
-        )
+        query.edit_message_text("⏰ Настройка времени:", reply_markup=reply_markup)
 
     def show_modes_menu(self, query):
         """Меню режимов"""
@@ -163,16 +109,16 @@ class DailyMessageBot:
         """Обработка изменения времени"""
         if data == "timer_welcome":
             query.edit_message_text(f"⏰ Введите время приветствия:\nСейчас: {self.welcome_time}\n\nПример: 09:00\n\n❌ Отмена - /cancel")
-            context.user_data['waiting_welcome_time'] = True
+            self.user_data = {'waiting_welcome_time': True}
         elif data == "timer_silent_start":
             query.edit_message_text(f"🔇 Введите начало тишины:\nСейчас: {self.silent_start_time}\n\nПример: 22:00\n\n❌ Отмена - /cancel")
-            context.user_data['waiting_silent_start'] = True
+            self.user_data = {'waiting_silent_start': True}
         elif data == "timer_silent_end":
             query.edit_message_text(f"🔊 Введите конец тишины:\nСейчас: {self.silent_end_time}\n\nПример: 08:00\n\n❌ Отмена - /cancel")
-            context.user_data['waiting_silent_end'] = True
+            self.user_data = {'waiting_silent_end': True}
         elif data == "timer_cleanup":
             query.edit_message_text(f"🗑️ Введите время очистки:\nСейчас: {self.cleanup_time}\n\nПример: 18:00\n\n❌ Отмена - /cancel")
-            context.user_data['waiting_cleanup_time'] = True
+            self.user_data = {'waiting_cleanup_time': True}
 
     def handle_mode_change(self, query, data):
         """Обработка изменения режимов"""
@@ -189,7 +135,6 @@ class DailyMessageBot:
 
     def handle_text_message(self, update, context):
         """Обработка текстовых сообщений"""
-        user_data = context.user_data
         text = update.message.text
         
         # Режим тишины - ТИХОЕ удаление
@@ -208,46 +153,36 @@ class DailyMessageBot:
             return
         
         # Обработка ввода времени
-        if user_data.get('waiting_welcome_time'):
+        if hasattr(self, 'user_data') and self.user_data.get('waiting_welcome_time'):
             if self.validate_time(text):
                 self.welcome_time = text
-                self.schedule_welcome_message()
                 update.message.reply_text(f"✅ Время приветствия: {text}")
-                self.show_timers_menu_from_message(update, context)
-                user_data.pop('waiting_welcome_time', None)
-            else:
-                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 09:30")
+                self.show_timers_menu_from_message(update)
+                self.user_data = {}
             return
         
-        elif user_data.get('waiting_silent_start'):
+        elif hasattr(self, 'user_data') and self.user_data.get('waiting_silent_start'):
             if self.validate_time(text):
                 self.silent_start_time = text
                 update.message.reply_text(f"✅ Начало тишины: {text}")
-                self.show_timers_menu_from_message(update, context)
-                user_data.pop('waiting_silent_start', None)
-            else:
-                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 22:30")
+                self.show_timers_menu_from_message(update)
+                self.user_data = {}
             return
         
-        elif user_data.get('waiting_silent_end'):
+        elif hasattr(self, 'user_data') and self.user_data.get('waiting_silent_end'):
             if self.validate_time(text):
                 self.silent_end_time = text
                 update.message.reply_text(f"✅ Конец тишины: {text}")
-                self.show_timers_menu_from_message(update, context)
-                user_data.pop('waiting_silent_end', None)
-            else:
-                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 08:15")
+                self.show_timers_menu_from_message(update)
+                self.user_data = {}
             return
         
-        elif user_data.get('waiting_cleanup_time'):
+        elif hasattr(self, 'user_data') and self.user_data.get('waiting_cleanup_time'):
             if self.validate_time(text):
                 self.cleanup_time = text
-                self.schedule_cleanup()
                 update.message.reply_text(f"✅ Очистка тем: {text}")
-                self.show_timers_menu_from_message(update, context)
-                user_data.pop('waiting_cleanup_time', None)
-            else:
-                update.message.reply_text("❌ Неверный формат! Используйте ЧЧ:ММ\nПример: 18:30")
+                self.show_timers_menu_from_message(update)
+                self.user_data = {}
             return
 
         # Если не обработано - показываем главное меню
@@ -261,7 +196,7 @@ class DailyMessageBot:
         except:
             return False
 
-    def show_timers_menu_from_message(self, update, context):
+    def show_timers_menu_from_message(self, update):
         """Показать меню времени"""
         keyboard = [
             [InlineKeyboardButton(f"🕐 Приветствие: {self.welcome_time}", callback_data="timer_welcome")],
@@ -285,8 +220,7 @@ class DailyMessageBot:
             f"⏰ Время тишины: {self.silent_start_time} - {self.silent_end_time}\n"
             f"👋 Приветствия: {'ВКЛ' if self.welcome_mode else 'ВЫКЛ'}\n"
             f"🕐 Время приветствия: {self.welcome_time}\n"
-            f"🗑️ Очистка тем: {self.cleanup_time}\n\n"
-            f"💡 Режим тишины работает ТИХО"
+            f"🗑️ Очистка тем: {self.cleanup_time}"
         )
         
         keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]
@@ -297,7 +231,7 @@ def main():
     """Запуск бота"""
     bot = DailyMessageBot()
     
-    # Создаем updater для версии 13.15
+    # Создаем updater
     updater = Updater(token=bot.token, use_context=True)
     
     # Регистрация обработчиков
@@ -306,7 +240,7 @@ def main():
     updater.dispatcher.add_handler(CallbackQueryHandler(bot.button_handler))
     updater.dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, bot.handle_text_message))
     
-    print("✅ Бот запущен на Render!")
+    print("✅ Бот запущен!")
     print("⏰ Время приветствия:", bot.welcome_time)
     print("🔇 Тишина:", bot.silent_start_time, "-", bot.silent_end_time)
     print("🗑️ Очистка:", bot.cleanup_time)
