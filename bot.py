@@ -725,7 +725,8 @@ def main():
     
     print("✅ Бот запущен на Render!")
     print("⏰ Время приветствия:", bot.welcome_time)
-    print("🔇 Тишина:", bot.silent_start_time, "-", 
-      bot.silent_end_time, "Текущее:", current_time)
+    silent_info = f"🔇 Тишина: {bot.silent_start_time} - {bot.silent_end_time}"
+print(silent_info)
+
 
 
