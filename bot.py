@@ -474,7 +474,7 @@ class DailyMessageBot:
 # ЗАПУСК БОТА (PTB v20)
 # -----------------------------------------------------------------------------
 def main():
-    if BOT_TOKEN == "8525784017:AAGyonwOxkChbavfqMhT1e4IFLa89mgt_Ys":
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         logger.error("!!!!!!!!!!!!!!!!! ОШИБКА !!!!!!!!!!!!!!!!!")
         logger.error("Не указан токен бота (BOT_TOKEN).")
         return
