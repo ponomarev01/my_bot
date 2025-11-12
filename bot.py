@@ -59,7 +59,7 @@ class DailyMessageBot:
         self.last_welcome_message = self.data.get('last_welcome_message', self.DEFAULT_DATA['last_welcome_message'])
         
         self.scheduler = None 
-        # Словарь для временного хранения callback_query, чтобы вернуться в меню после ввода текста в ЛС.
+        # Словарь для временного хранения callback_query для возврата в меню после ввода текста в ЛС
         self.last_query = {} 
 
 
@@ -203,7 +203,7 @@ class DailyMessageBot:
         self.save_data()
         
         await message.reply_text(
-            f"✅ **Тема/Чат зарегистрирован!**\nТеперь вы можете настроить эту цель (`{name}`) в меню бота в ЛС.", 
+            f"✅ **Тема/Чат зарегистрирован!**\nТеперь вы можете настроить эту цель (`{name}`) в меню бота в ЛС (команда /start).", 
             parse_mode='Markdown', 
             quote=True
         )
@@ -254,7 +254,8 @@ class DailyMessageBot:
         if stop_words_list:
             for word in stop_words_list:
                 # Проверяем нахождение слова целиком (добавляем пробелы для точности)
-                if f' {word.lower()} ' in f' {message_text} ':
+                word_pattern = rf"\b{re.escape(word.lower())}\b"
+                if re.search(word_pattern, message_text):
                     try:
                         await message.delete()
                         logger.info(f"🚫 Запрещенное слово '{word}' найдено. Сообщение удалено в чате {chat_id}, теме {thread_id or 'main'}.")
@@ -300,6 +301,7 @@ class DailyMessageBot:
         elif state == INPUT_STATE_STOP_WORD:
             await self._process_stop_word_input(update, context)
         else:
+            # Неизвестное состояние, возвращаем в главное меню
             await self._send_main_menu(update.message.chat_id, "⚠️ **Неизвестная команда.** Используйте меню:", clear_context=False)
             
     # --- Методы обработки ввода ---
@@ -313,13 +315,14 @@ class DailyMessageBot:
         
         day_name = self.get_day_name(day_index)
         
-        # Использование сохраненного query для возврата в меню
         query = self.last_query.get(update.message.chat_id)
+        self._clear_user_data(context.user_data) 
+        
         if query:
-            # Очистка состояния ввода
-            self._clear_user_data(context.user_data) 
+            # Возвращаемся в меню приветствий
             await self._edit_welcome_menu(query, f"✅ Текст для **{day_name}** сохранен!")
         else:
+            # На всякий случай, если query был потерян
             await self._send_main_menu(update.message.chat_id, f"✅ Текст для **{day_name}** сохранен!", clear_context=True)
 
 
@@ -349,8 +352,10 @@ class DailyMessageBot:
         topic_name = self.get_topic_name_by_key(chat_key)
         
         query = self.last_query.get(update.message.chat_id)
+        self._clear_user_data(context.user_data)
+        
         if query:
-            self._clear_user_data(context.user_data) 
+            # Возвращаемся в меню выбора темы авто-очистки
             await self._edit_autodelete_select_topic_menu(query, 
                 f"✅ **Тихая Авто-Очистка** в `{topic_name}` настроена на {time_str} UTC.")
         else:
@@ -378,8 +383,10 @@ class DailyMessageBot:
         topic_name = self.get_topic_name_by_key(chat_key)
 
         query = self.last_query.get(update.message.chat_id)
+        self._clear_user_data(context.user_data)
+        
         if query:
-            self._clear_user_data(context.user_data)
+            # Возвращаемся в меню авто-ответов для конкретной темы
             await self._edit_autoresponse_menu(query, 
                 chat_key, 
                 status_message=f"✅ **Авто-Ответ** настроен в `{topic_name}`:\nСлово: `{keyword}`\nОтвет: `{response_text}`")
@@ -401,8 +408,10 @@ class DailyMessageBot:
         topic_name = self.get_topic_name_by_key(chat_key)
 
         query = self.last_query.get(update.message.chat_id)
+        self._clear_user_data(context.user_data)
+        
         if query:
-            self._clear_user_data(context.user_data)
+            # Возвращаемся в меню стоп-слов для конкретной темы
             await self._edit_stop_word_menu(
                 query, 
                 chat_key, 
@@ -429,18 +438,25 @@ class DailyMessageBot:
         return days[day_index]
         
     def get_topic_name_by_key(self, chat_key: str) -> str:
-        return self.registered_topics.get(chat_key, {}).get('name', '❌ Тема не найдена')
+        # Улучшенная проверка на существование темы
+        if chat_key in self.registered_topics:
+             return self.registered_topics[chat_key].get('name', '❌ Тема не найдена')
+        return '❌ Тема не найдена'
 
     # --- Обработчик команд и кнопок ---
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /start: Сброс и отправка главного меню."""
         self._clear_user_data(context.user_data)
-        self.last_query.pop(update.message.chat_id, None) # Очищаем сохраненный запрос
+        
+        # Очищаем сохраненный запрос, чтобы не вызвать сбой редактирования старого сообщения
+        self.last_query.pop(update.message.chat_id, None) 
+        
         await self._send_main_menu(update.message.chat_id, "👋 **Главное меню:**")
 
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
+        # Отвечаем на запрос сразу, чтобы избежать задержки и таймаута
         await query.answer() 
         data = query.data
         
@@ -448,56 +464,62 @@ class DailyMessageBot:
         self.last_query[query.message.chat_id] = query
         self._clear_user_data(context.user_data) 
         
-        if data == "back_main":
-            await self._edit_main_menu(query)
-        elif data.startswith("menu_"):
-            if data == "menu_welcome":
-                await self._edit_welcome_menu(query)
-            elif data == "menu_autodelete":
-                await self._edit_autodelete_select_topic_menu(query)
-            elif data == "menu_autoresponse":
-                await self._edit_autoresponse_select_topic_menu(query)
-            elif data == "menu_stop_words":
-                await self._edit_stop_word_select_topic_menu(query)
+        try:
+            if data == "back_main":
+                await self._edit_main_menu(query)
+            elif data.startswith("menu_"):
+                if data == "menu_welcome":
+                    await self._edit_welcome_menu(query)
+                elif data == "menu_autodelete":
+                    await self._edit_autodelete_select_topic_menu(query)
+                elif data == "menu_autoresponse":
+                    await self._edit_autoresponse_select_topic_menu(query)
+                elif data == "menu_stop_words":
+                    await self._edit_stop_word_select_topic_menu(query)
 
-        # -------------------- ЕЖЕДНЕВНЫЕ ПРИВЕТСТВИЯ --------------------
-        elif data.startswith("target_select_"):
-            await self._edit_select_target_topic_menu(query)
-        elif data.startswith("target_set_"):
-            await self._action_set_target_topic(query, data.split("target_set_")[1])
-        elif data.startswith("welcome_day_"):
-            await self._handle_daily_message_setup(query, context, int(data.split("welcome_day_")[1]))
-        elif data == "welcome_toggle":
-            await self._action_toggle_welcome_mode(query)
+            # -------------------- ЕЖЕДНЕВНЫЕ ПРИВЕТСТВИЯ --------------------
+            elif data.startswith("target_select_"):
+                await self._edit_select_target_topic_menu(query)
+            elif data.startswith("target_set_"):
+                await self._action_set_target_topic(query, data.split("target_set_")[1])
+            elif data.startswith("welcome_day_"):
+                await self._handle_daily_message_setup(query, context, int(data.split("welcome_day_")[1]))
+            elif data == "welcome_toggle":
+                await self._action_toggle_welcome_mode(query)
 
-        # -------------------- ТИХАЯ АВТО-ОЧИСТКА --------------------
-        elif data.startswith("autodelete_select_"):
-            await self._edit_autodelete_menu(query, data.split("autodelete_select_")[1])
-        elif data.startswith("autodelete_set_"):
-            await self._handle_autodelete_setup(query, context, data.split("autodelete_set_")[1])
-        elif data.startswith("autodelete_remove_"):
-            await self._action_remove_autodelete(query, data.split("autodelete_remove_")[1])
+            # -------------------- ТИХАЯ АВТО-ОЧИСТКА --------------------
+            elif data.startswith("autodelete_select_"):
+                await self._edit_autodelete_menu(query, data.split("autodelete_select_")[1])
+            elif data.startswith("autodelete_set_"):
+                await self._handle_autodelete_setup(query, context, data.split("autodelete_set_")[1])
+            elif data.startswith("autodelete_remove_"):
+                await self._action_remove_autodelete(query, data.split("autodelete_remove_")[1])
 
-        # -------------------- АВТО-ОТВЕТЫ --------------------
-        elif data.startswith("autoresponse_select_"):
-            await self._edit_autoresponse_menu(query, data.split("autoresponse_select_")[1])
-        elif data.startswith("autoresponse_add_"):
-            await self._handle_autoresponse_setup(query, context, data.split("autoresponse_add_")[1])
-        elif data.startswith("autoresponse_remove_"):
-            parts = data.split("autoresponse_remove_")[1].split('|', 1)
-            await self._action_remove_autoresponse(query, parts[0], parts[1])
+            # -------------------- АВТО-ОТВЕТЫ --------------------
+            elif data.startswith("autoresponse_select_"):
+                await self._edit_autoresponse_menu(query, data.split("autoresponse_select_")[1])
+            elif data.startswith("autoresponse_add_"):
+                await self._handle_autoresponse_setup(query, context, data.split("autoresponse_add_")[1])
+            elif data.startswith("autoresponse_remove_"):
+                parts = data.split("autoresponse_remove_")[1].split('|', 1)
+                await self._action_remove_autoresponse(query, parts[0], parts[1])
 
-        # -------------------- ЗАПРЕЩЕННЫЕ СЛОВА --------------------
-        elif data.startswith("stop_select_"):
-            await self._edit_stop_word_menu(query, data.split("stop_select_")[1])
-        elif data.startswith("stop_add_"):
-            await self._handle_stop_word_setup(query, context, data.split("stop_add_")[1])
-        elif data.startswith("stop_remove_"):
-            parts = data.split("stop_remove_")[1].split('|', 1)
-            await self._action_remove_stop_word(query, parts[0], parts[1])
-        
-        else:
-             await query.edit_message_text("🚧 Неизвестная команда.", reply_markup=self._get_back_to_main_keyboard())
+            # -------------------- ЗАПРЕЩЕННЫЕ СЛОВА --------------------
+            elif data.startswith("stop_select_"):
+                await self._edit_stop_word_menu(query, data.split("stop_select_")[1])
+            elif data.startswith("stop_add_"):
+                await self._handle_stop_word_setup(query, context, data.split("stop_add_")[1])
+            elif data.startswith("stop_remove_"):
+                parts = data.split("stop_remove_")[1].split('|', 1)
+                await self._action_remove_stop_word(query, parts[0], parts[1])
+            
+            else:
+                 await query.edit_message_text("🚧 Неизвестная команда.", reply_markup=self._get_back_to_main_keyboard())
+                 
+        except Exception as e:
+            # Универсальный обработчик сбоя
+            logger.error(f"Критический сбой в обработчике Callback: {e}")
+            await self._send_main_menu(query.message.chat_id, "❌ **Критическая ошибка навигации.** Пожалуйста, попробуйте снова.", clear_context=True)
 
 
     # --- Action Methods ---
@@ -626,8 +648,10 @@ class DailyMessageBot:
 
     async def _send_main_menu(self, chat_id: int, text: str, clear_context: bool = True):
         """Отправляет Главное меню (используется после /start или сбоя)."""
-        if clear_context: self._clear_user_data(self.application.context_types.user_data[chat_id])
-        
+        # Гарантируем очистку состояния при отправке нового меню
+        if clear_context and chat_id in self.application.context_types.user_data: 
+            self._clear_user_data(self.application.context_types.user_data[chat_id])
+            
         keyboard = [
             [InlineKeyboardButton("🗓 Ежедневные Приветствия", callback_data="menu_welcome")],
             [InlineKeyboardButton("🗑️ Тихая Авто-Очистка", callback_data="menu_autodelete")],
@@ -654,7 +678,7 @@ class DailyMessageBot:
         await self.bot.send_message(chat_id, f"{status_text}\n\n{text}", reply_markup=reply_markup, parse_mode='Markdown')
 
     async def _edit_main_menu(self, query: Update.callback_query):
-        """Редактирует сообщение до Главного меню."""
+        """Редактирует сообщение до Главного меню. При сбое отправляет новое сообщение."""
         keyboard = [
             [InlineKeyboardButton("🗓 Ежедневные Приветствия", callback_data="menu_welcome")],
             [InlineKeyboardButton("🗑️ Тихая Авто-Очистка", callback_data="menu_autodelete")],
@@ -678,8 +702,12 @@ class DailyMessageBot:
         status_text += "---"
         # ------------------------------------------------
 
-        try: await query.edit_message_text(f"{status_text}\n\n**Меню управления:**", reply_markup=reply_markup, parse_mode='Markdown')
-        except Exception: await self._send_main_menu(query.message.chat_id, "Сбой меню. Сброс.", clear_context=True)
+        try: 
+            await query.edit_message_text(f"{status_text}\n\n**Меню управления:**", reply_markup=reply_markup, parse_mode='Markdown')
+        except Exception: 
+            # КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Если редактирование не удалось, отправляем новое меню.
+            logger.warning(f"Сбой редактирования главного меню (таймаут/старое сообщение). Отправка нового меню.")
+            await self._send_main_menu(query.message.chat_id, "**Меню управления:**", clear_context=True)
 
 
     # --- Меню Приветствий ---
@@ -720,14 +748,15 @@ class DailyMessageBot:
         try:
             await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except Exception: 
-            await self._edit_main_menu(query)
+            await self._edit_main_menu(query) # Если сбой, возвращаемся в главное меню
+
 
     async def _edit_select_target_topic_menu(self, query: Update.callback_query):
         """Меню выбора целевой темы для приветствий."""
         keyboard = []
         
         if not self.registered_topics:
-            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе."
+            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе (форуме), чтобы она появилась здесь."
         else:
             message_text = "🎯 **Выберите целевую тему** для отправки ежедневных приветствий:"
             for key, data in self.registered_topics.items():
@@ -750,7 +779,7 @@ class DailyMessageBot:
         keyboard = []
         
         if not self.registered_topics:
-            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе."
+            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе (форуме), чтобы она появилась здесь."
         else:
             message_text = f"{status_message}\n\n" if status_message else ""
             message_text += "🗑️ **Выберите тему** для настройки Тихой Авто-Очистки:"
@@ -764,13 +793,17 @@ class DailyMessageBot:
         try:
             await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except Exception:
-            await self._edit_main_menu(query)
+            await self._edit_main_menu(query) # Если сбой, возвращаемся в главное меню
 
 
     async def _edit_autodelete_menu(self, query: Update.callback_query, chat_key: str):
         """Меню настройки Тихой Авто-Очистки для выбранной темы."""
         topic_name = self.get_topic_name_by_key(chat_key)
         config = self.auto_delete_topics.get(chat_key)
+        
+        if topic_name == '❌ Тема не найдена':
+            return await self._edit_autodelete_select_topic_menu(query, "❌ Тема не найдена. Возможно, она была удалена.")
+
 
         if config:
             start_str = f"{config['start_h']:02d}:{config['start_m']:02d}"
@@ -805,7 +838,7 @@ class DailyMessageBot:
         keyboard = []
         
         if not self.registered_topics:
-            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе."
+            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе (форуме), чтобы она появилась здесь."
         else:
             message_text = f"{status_message}\n\n" if status_message else ""
             message_text += "💬 **Выберите тему** для настройки Авто-Ответов:"
@@ -819,12 +852,16 @@ class DailyMessageBot:
         try:
             await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except Exception:
-            await self._edit_main_menu(query)
+            await self._edit_main_menu(query) # Если сбой, возвращаемся в главное меню
 
     async def _edit_autoresponse_menu(self, query: Update.callback_query, chat_key: str, status_message: str = ""):
         """Меню настройки Авто-Ответов для выбранной темы."""
         topic_name = self.get_topic_name_by_key(chat_key)
         responses = self.auto_responses.get(chat_key, {})
+        
+        if topic_name == '❌ Тема не найдена':
+            return await self._edit_autoresponse_select_topic_menu(query, "❌ Тема не найдена. Возможно, она была удалена.")
+
 
         keyboard = []
         
@@ -858,7 +895,7 @@ class DailyMessageBot:
         keyboard = []
         
         if not self.registered_topics:
-            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе."
+            message_text = "❌ **Нет зарегистрированных тем.** Используйте `/register` в нужной теме в группе (форуме), чтобы она появилась здесь."
         else:
             message_text = f"{status_message}\n\n" if status_message else ""
             message_text += "🚫 **Выберите тему** для настройки Запрещенных Слов:"
@@ -872,13 +909,17 @@ class DailyMessageBot:
         try:
             await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         except Exception:
-            await self._edit_main_menu(query)
+            await self._edit_main_menu(query) # Если сбой, возвращаемся в главное меню
 
 
     async def _edit_stop_word_menu(self, query: Update.callback_query, chat_key: str, status_message: str = ""):
         """Меню настройки Запрещенных Слов для выбранной темы."""
         topic_name = self.get_topic_name_by_key(chat_key)
         words = self.stop_words.get(chat_key, [])
+        
+        if topic_name == '❌ Тема не найдена':
+            return await self._edit_stop_word_select_topic_menu(query, "❌ Тема не найдена. Возможно, она была удалена.")
+
 
         keyboard = []
         
