@@ -10,5 +10,7 @@ runtime:
 
 jobs:
   worker:
-    # Запуск через shell. Сначала переходим в /app, затем запускаем bot.py
-    start: sh -c "cd /app && python bot.py"
+    # Передаем переменную прямо в секции запуска
+    environment:
+      BOT_TOKEN: 8525784017:AAFLa_6Guk5_w4TekVQqjSxVliOFiPk9CXA
+    start: python bot.py
