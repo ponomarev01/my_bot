@@ -1,4 +1,3 @@
-python-telegram-bot
+python-telegram-bot==20.8
 apscheduler
 pytz
-filetype  # <-- ЭТО ДОЛЖНО БЫТЬ ТАМ
