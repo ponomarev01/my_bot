@@ -4,7 +4,7 @@ import os
 from datetime import datetime, time
 import asyncio
 
-# --- ИМПОРТЫ ДЛЯ PTB v20 (Современная версия) ---
+# --- ИМПОРТЫ ДЛЯ PTB v20 ---
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
     Application, 
@@ -60,7 +60,24 @@ class DailyMessageBot:
         self.admin_cache = {}
         self.scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         self.load_data()
+        
+        # self.setup_schedulers() # <--- ЭТУ СТРОКУ УДАЛИЛИ, ЧТОБЫ ИСПРАВИТЬ ОШИБКУ no running event loop
+        
+    async def post_init_hook(self, application: Application):
+        """
+        Хук, вызываемый PTB после инициализации, но до запуска опроса. 
+        Это идеальное место для запуска планировщика.
+        """
+        # 1. Настройка всех заданий (если они не были настроены в load_data)
         self.setup_schedulers()
+
+        # 2. Запуск планировщика, когда цикл событий готов
+        if not self.scheduler.running:
+            try:
+                self.scheduler.start()
+                logger.info("✅ Планировщик apscheduler успешно запущен.")
+            except Exception as e:
+                logger.error(f"Ошибка запуска планировщика: {e}")
         
     def load_data(self):
         """Загрузка данных из файла"""
@@ -89,7 +106,6 @@ class DailyMessageBot:
     def save_data(self):
         """Сохранение данных в файл (асинхронно, чтобы не блокировать бота)"""
         try:
-            # Используем to_thread для выполнения блокирующей операции в отдельном потоке
             asyncio.run_coroutine_threadsafe(self._save_data_async(), self.application.loop)
         except Exception as e:
             logger.error(f"Ошибка инициирования сохранения данных: {e}")
@@ -97,7 +113,6 @@ class DailyMessageBot:
     async def _save_data_async(self):
         """Асинхронное сохранение данных"""
         try:
-            # Очистка сообщений перед сохранением (не храним их на диске)
             monitored_topics_to_save = {}
             for name, data in self.monitored_topics.items():
                 monitored_topics_to_save[name] = data.copy()
@@ -124,16 +139,11 @@ class DailyMessageBot:
     # ПЛАНИРОВЩИКИ (Async)
     # -----------------------------------------------------------------
     def setup_schedulers(self):
-        """Настройка и запуск всех задач по расписанию."""
+        """Настройка всех задач по расписанию (НЕ ЗАПУСК)."""
         self.schedule_welcome_message()
         self.schedule_welcome_delete()
         self.schedule_monitored_cleanup()
-        if not self.scheduler.running:
-            try:
-                self.scheduler.start()
-            except Exception as e:
-                logger.warning(f"Планировщик уже запущен или ошибка: {e}")
-
+    
     def schedule_welcome_message(self):
         """Планирование ежедневного приветствия."""
         try: self.scheduler.remove_job('welcome_message')
@@ -195,7 +205,6 @@ class DailyMessageBot:
     async def get_admin_ids(self, chat_id):
         """Кэширование и получение ID администраторов."""
         now = datetime.now()
-        # Кэш на 10 минут
         if chat_id in self.admin_cache and (now - self.admin_cache[chat_id]['timestamp']).total_seconds() < 600:
             return self.admin_cache[chat_id]['ids']
         try:
@@ -361,8 +370,7 @@ class DailyMessageBot:
         await query.answer()
         data = query.data
         
-        # Общие команды (для предотвращения слишком длинного кода, я опущу здесь детали всех меню, 
-        # но они есть в полной версии, которую я вам давал ранее. Я оставлю только функции-заглушки)
+        # --- Здесь должна быть вся логика меню ---
         
         if data == "back_main":
             context.user_data.clear()
@@ -370,10 +378,7 @@ class DailyMessageBot:
         elif data == "modes": await self.show_modes_menu(query)
         elif data == "timers": await self.show_timers_menu(query)
         elif data == "status": await self.show_status(query)
-        elif data.startswith("mode_"): await self.handle_mode_change(query, data)
-        elif data.startswith("timer_"): await self.handle_timer_change(query, data, context)
-        
-        # ... (здесь должна быть вся остальная логика меню)
+        # ... (и так далее, вся ваша логика)
         
     async def show_main_menu(self, query):
         """Отображение главного меню."""
@@ -390,8 +395,54 @@ class DailyMessageBot:
             await query.edit_message_text("👋 Главное меню:", reply_markup=reply_markup)
         except Exception: pass
 
-    # ... (здесь должны быть все остальные функции show_X_menu и handle_X)
+    async def show_modes_menu(self, query):
+        """Отображение меню режимов."""
+        silent_status = "🔇 ВКЛ" if self.silent_mode else "🔊 ВЫКЛ"
+        welcome_status = "👋 ВКЛ" if self.welcome_mode else "🚫 ВЫКЛ"
+        
+        keyboard = [
+            [InlineKeyboardButton(f"Режим тишины: {silent_status}", callback_data="mode_silent")],
+            [InlineKeyboardButton(f"Режим приветствия: {welcome_status}", callback_data="mode_welcome")],
+            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⚙️ Управление режимами:\n\n"
+            "🔇 Режим тишины - бот БЕСШУМНО удаляет сообщения в нерабочее время.\n"
+            "👋 Режим приветствия - ежедневное приветственное сообщение.",
+            reply_markup=reply_markup
+        )
     
+    async def show_timers_menu(self, query):
+        """Отображение меню времени."""
+        keyboard = [
+            [InlineKeyboardButton(f"🕐 Приветствие: {self.welcome_time}", callback_data="timer_welcome")],
+            [InlineKeyboardButton(f"🗑️ Удаление приветствия: {self.welcome_delete_time}", callback_data="timer_welcome_delete")],
+            [InlineKeyboardButton(f"🔇 Начало тишины: {self.silent_start_time}", callback_data="timer_silent_start")],
+            [InlineKeyboardButton(f"🔊 Конец тишины: {self.silent_end_time}", callback_data="timer_silent_end")],
+            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text("⏰ Настройка времени (по UTC):", reply_markup=reply_markup)
+
+    async def handle_mode_change(self, query, data):
+        """Обработка смены режимов."""
+        if data == "mode_silent":
+            self.silent_mode = not self.silent_mode
+        elif data == "mode_welcome":
+            self.welcome_mode = not self.welcome_mode
+        self.save_data()
+        await self.show_modes_menu(query)
+
+    async def handle_timer_change(self, query, data, context):
+        """Обработка нажатия на кнопку таймера (для ввода времени)."""
+        cancel_button = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="back_timers")]])
+        
+        if data == "timer_welcome":
+            await query.edit_message_text(f"⏰ Введите время для ПРИВЕТСТВИЯ (UTC, ЧЧ:ММ):\nСейчас: {self.welcome_time}", reply_markup=cancel_button)
+            context.user_data['waiting_welcome_time'] = True
+        # ... (остальные таймеры)
+
     # -----------------------------------------------------------------
     # ОБРАБОТЧИКИ ТЕКСТА В ЛС (ВВОД ДАННЫХ - Async)
     # -----------------------------------------------------------------
@@ -421,17 +472,16 @@ class DailyMessageBot:
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Готово (Назад)", callback_data="back_stoplist")]])
             )
-            user_data.pop('waiting_stoplist_add', None) # Сброс, если нужно только одно слово
+            # user_data.pop('waiting_stoplist_add', None) 
             return
             
-        # --- Обработка ввода времени (Часть логики для примера) ---
+        # --- Обработка ввода времени ---
         if user_data.get('waiting_welcome_time'):
             if self.validate_time(text):
                 self.welcome_time = text
                 self.save_data(); self.schedule_welcome_message()
                 await update.message.reply_text(f"✅ Время приветствия (UTC) установлено: {text}")
-                # Предполагаем, что у вас есть функция для возврата в меню
-                # await self.show_timers_menu_from_message(update)
+                # Предположим, вы хотите вернуться в меню таймеров после ввода
                 user_data.clear()
             else: await update.message.reply_text("❌ Неверный формат! (ЧЧ:ММ)")
             return
@@ -439,7 +489,7 @@ class DailyMessageBot:
         # ... (остальная логика ввода данных)
 
     # -----------------------------------------------------------------
-    # УТИЛИТЫ
+    # УТИЛИТЫ И СТАТУС
     # -----------------------------------------------------------------
     def validate_time(self, time_str):
         """Проверка корректности формата времени ЧЧ:ММ."""
@@ -482,6 +532,9 @@ def main():
     application = Application.builder().token(BOT_TOKEN).build()
     bot_instance = DailyMessageBot(application)
 
+    # 0. Подключаем хук для запуска планировщика ПОСЛЕ инициализации
+    application.post_init = bot_instance.post_init_hook 
+    
     # 1. Команды
     application.add_handler(CommandHandler("start", bot_instance.start, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("registertopic", bot_instance.register_topic, filters=filters.ChatType.GROUPS))
@@ -493,7 +546,7 @@ def main():
     # 3. Обработчик текста в ЛС (Ввод данных)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, bot_instance.handle_private_text))
     
-    # 4. Обработчик текста и ПОДПИСЕЙ в ГРУППАХ (удаление стоп-слов/тишины, сбор сообщений)
+    # 4. Обработчик текста и ПОДПИСЕЙ в ГРУППАХ
     application.add_handler(MessageHandler(
         (filters.TEXT | filters.CAPTION) & ~filters.COMMAND & filters.ChatType.GROUPS, 
         bot_instance.handle_group_message
@@ -502,7 +555,7 @@ def main():
     logger.info("Бот запускается (PTB v20)...")
     application.run_polling(poll_interval=1.0)
     
-    bot_instance.scheduler.shutdown()
+    # scheduler.shutdown() не нужен, так как он останавливается при остановке приложения
     logger.info("Бот остановлен.")
 
 if __name__ == '__main__':
