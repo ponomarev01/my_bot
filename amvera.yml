@@ -6,13 +6,9 @@ meta:
 
 runtime:
   name: python
-  version: "3.10" # Убедитесь, что это соответствует вашей версии
-
-build:
-  # Явно указываем, что рабочая директория для сборки — это корень репозитория
-  working_dir: /app 
+  version: "3.10"
 
 jobs:
   worker:
-    # Запуск бота в фоновом режиме
-    start: python bot.py
+    # Запуск через shell. Сначала переходим в /app, затем запускаем bot.py
+    start: sh -c "cd /app && python bot.py"
