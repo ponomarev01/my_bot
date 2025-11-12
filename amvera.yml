@@ -1,13 +1,18 @@
 meta:
   version: 1
-  id: python-telegram-bot-worker
+  id: telegram-bot-worker
   tag: latest
   description: Telegram Bot Worker
 
 runtime:
   name: python
-  version: "3.11"
+  version: "3.10" # Убедитесь, что это соответствует вашей версии
+
+build:
+  # Явно указываем, что рабочая директория для сборки — это корень репозитория
+  working_dir: /app 
 
 jobs:
   worker:
-    start: python3 bot.py
+    # Запуск бота в фоновом режиме
+    start: python bot.py
