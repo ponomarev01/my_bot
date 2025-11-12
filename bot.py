@@ -126,7 +126,7 @@ class DailyMessageBot:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     # -----------------------------------------------------------------
-    # ПЛАНИРОВЩИКИ (Async) - Не изменены
+    # ПЛАНИРОВЩИКИ (Async)
     # -----------------------------------------------------------------
     def setup_schedulers(self):
         """Настройка всех задач по расписанию (НЕ ЗАПУСК)."""
@@ -166,10 +166,72 @@ class DailyMessageBot:
                 logger.info(f"✅ Очистка '{topic_name}': {topic_data.get('cleanup_time', '18:00')} UTC")
             except Exception as e: logger.error(f"Ошибка schedule_monitored_cleanup ({topic_name}): {e}")
 
+    # --- Остальные Job-функции (send_welcome_message_job, delete_welcome_message_job и т.д.) не изменены ---
+    async def send_welcome_message_job(self):
+        """Отправка ежедневного приветствия."""
+        try:
+            today = datetime.now(pytz.UTC).weekday()
+            message = self.daily_messages.get(str(today))
+            if not self.welcome_mode or not message or not self.target_chat_id: return
+            
+            sent_message = await self.bot.send_message(chat_id=self.target_chat_id, text=message, message_thread_id=self.target_thread_id)
+            self.last_welcome_message = {"chat_id": sent_message.chat_id, "message_id": sent_message.message_id}
+            await self._save_data_async()
+        except Exception as e: logger.error(f"Ошибка send_welcome_message_job: {e}")
+
+    async def delete_welcome_message_job(self):
+        """Удаление последнего приветственного сообщения."""
+        if not self.last_welcome_message: return
+        try:
+            await self.bot.delete_message(chat_id=self.last_welcome_message['chat_id'], message_id=self.last_welcome_message['message_id'])
+        except Exception as e: logger.warning(f"Не удалось удалить приветствие: {e}")
+        finally:
+            self.last_welcome_message = {}
+            await self._save_data_async()
+
+    async def get_admin_ids(self, chat_id):
+        """Кэширование и получение ID администраторов."""
+        now = datetime.now()
+        if chat_id in self.admin_cache and (now - self.admin_cache[chat_id]['timestamp']).total_seconds() < 600:
+            return self.admin_cache[chat_id]['ids']
+        try:
+            admins = await self.bot.get_chat_administrators(chat_id)
+            admin_ids = [admin.user.id for admin in admins]
+            self.admin_cache[chat_id] = {'ids': admin_ids, 'timestamp': now}
+            return admin_ids
+        except Exception as e:
+            logger.error(f"Не удалось получить список админов: {e}")
+            return []
+
+    async def cleanup_topic_job(self, topic_name):
+        """Очистка сообщений не-админов в отслеживаемой теме."""
+        logger.info(f"🧹 Запуск очистки для темы: {topic_name}")
+        if topic_name not in self.monitored_topics: return
+            
+        topic_data = self.monitored_topics[topic_name]
+        chat_id = topic_data['chat_id']
+        messages_to_delete = topic_data['messages']
+        if not messages_to_delete: return
+
+        admin_ids = await self.get_admin_ids(chat_id)
+        if not admin_ids: return
+
+        deleted_count = 0
+        for msg in messages_to_delete:
+            if msg['user_id'] not in admin_ids:
+                try:
+                    await self.bot.delete_message(chat_id=chat_id, message_id=msg['message_id'])
+                    deleted_count += 1
+                except Exception: pass
+        
+        logger.info(f"✅ Очистка {topic_name} завершена. Удалено {deleted_count} сообщений.")
+        self.monitored_topics[topic_name]['messages'] = []
+        await self._save_data_async()
+
+
     # -----------------------------------------------------------------
-    # ГРУППОВЫЕ ОБРАБОТЧИКИ - Не изменены
+    # ГРУППОВЫЕ ОБРАБОТЧИКИ
     # -----------------------------------------------------------------
-    # ... (все функции check_admin, register_topic, handle_group_message и т.д. остаются без изменений)
     def is_silent_time(self):
         if not self.silent_mode: return False
         now = datetime.now(pytz.UTC).time()
@@ -250,9 +312,7 @@ class DailyMessageBot:
     # -----------------------------------------------------------------
 
     # -----------------------------------------------------------------
-    # НОВЫЙ БЛОК: ФУНКЦИИ ОТОБРАЖЕНИЯ МЕНЮ (ЛС)
-    # Функции _edit_X_menu редактируют существующее сообщение (после кнопки).
-    # Функции _send_X_menu отправляют новое сообщение (после текстового ввода).
+    # ФУНКЦИИ ОТОБРАЖЕНИЯ МЕНЮ (ЛС) - Не изменены
     # -----------------------------------------------------------------
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -462,7 +522,8 @@ class DailyMessageBot:
         
         # --- Подменю: Таймеры (подготовка к вводу) ---
         elif data.startswith("timer_"):
-            timer_type = data.split('_')[1]
+            # Исправлено: берем весь ключ после 'timer_'
+            timer_type = data.split('_', 1)[1] 
             context.user_data['waiting_for'] = f'timer_{timer_type}'
             await query.edit_message_text(
                 f"⏰ Введите новое время для **{timer_type}** (UTC, ЧЧ:ММ):\n\nОтправьте /cancel для отмены.",
@@ -478,7 +539,7 @@ class DailyMessageBot:
 
 
     # -----------------------------------------------------------------
-    # УЛУЧШЕННЫЕ ОБРАБОТЧИКИ ТЕКСТА В ЛС (ВВОД ДАННЫХ - Async)
+    # ОБРАБОТЧИКИ ТЕКСТА В ЛС (ВВОД ДАННЫХ - Async)
     # -----------------------------------------------------------------
     async def handle_private_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка ввода текста (времен, сообщений) в ЛС."""
@@ -508,16 +569,15 @@ class DailyMessageBot:
             self.save_data()
             user_data.pop('waiting_for') # Сброс состояния
             
-            # 1. Четкое подтверждение
             await update.message.reply_text(f"✅ Слово '`{word}`' добавлено и активно.", parse_mode='Markdown')
-            
-            # 2. Возврат в обновленное меню стоп-листа
             await self._send_stoplist_menu(chat_id)
             return
             
         # --- Обработка ввода времени ---
         if waiting_for and waiting_for.startswith('timer_'):
-            timer_key = waiting_for.split('_')[1]
+            # Исправлено: берем весь ключ после 'timer_' для корректного ключа
+            timer_key = waiting_for.split('_', 1)[1]
+            
             if self.validate_time(text):
                 time_str = text.strip()
                 
@@ -533,10 +593,7 @@ class DailyMessageBot:
                 self.save_data()
                 user_data.clear()
                 
-                # 1. Четкое подтверждение
                 await update.message.reply_text(f"✅ Время **{timer_key}** (UTC) установлено: **{time_str}**", parse_mode='Markdown')
-                
-                # 2. Возврат в обновленное меню таймеров
                 await self._send_timers_menu(chat_id)
             else: 
                 await update.message.reply_text("❌ Неверный формат! Пожалуйста, используйте ЧЧ:ММ (например, 09:30).")
