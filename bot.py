@@ -491,14 +491,220 @@ class DailyMessageBot:
             parse_mode='Markdown'
         )
     
-    # ... (остальные меню: _edit_forbidden_words_menu, _edit_monitored_topics_menu, 
-    # _edit_cleanup_time_menu, _edit_daily_messages_menu, 
-    # _edit_daily_message_day_menu, _edit_target_topic_menu, 
-    # _edit_monitored_topics_menu_after_input, _send_daily_messages_menu)
-    # Используйте код из предыдущего полного ответа для этих методов.
+    # --- МЕНЮ ЗАПРЕЩЕННЫХ СЛОВ ---
+    async def _edit_forbidden_words_menu(self, query):
+        """Меню настройки запрещенных слов."""
+        
+        words_count = len(self.forbidden_words)
+        words_list = ", ".join(self.forbidden_words[:5])
+        if words_count > 5: words_list += f", и еще {words_count - 5}..."
+
+        keyboard = [
+            [InlineKeyboardButton(f"📝 Изменить список ({words_count} слов)", callback_data="set_forbidden_words")],
+            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"🤐 **Запрещенные Слова**\n\n"
+            f"Сообщения, содержащие любое из этих слов, будут **немедленно и бесшумно удалены**.\n\n"
+            f"**Текущий список:**\n{words_list if words_count > 0 else '*Список пуст.*'}",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+    # --- МЕНЮ АВТО-ОЧИСТКИ ---
+    
+    async def _edit_monitored_topics_menu(self, query):
+        """Меню выбора темы для настройки времени очистки."""
+        if not self.monitored_topics:
+            keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
+            return await query.edit_message_text(
+                "❌ **Нет зарегистрированных тем для авто-очистки.**\n\n"
+                "Чтобы добавить тему, используйте команду `/monitorcleanup [ИМЯ ТЕМЫ]` в нужной теме в вашей группе.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+
+        keyboard = []
+        for name, data in self.monitored_topics.items():
+            cleanup_time = data.get('cleanup_time', '18:00')
+            keyboard.append([InlineKeyboardButton(f"🧹 {name} ({cleanup_time} UTC)", callback_data=f"select_monitor_{name}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🧹 **Настройка авто-очистки**\n\n"
+            "Выберите тему, чтобы изменить время ежедневной очистки (удаляются только сообщения пользователей, не админов).",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+    async def _edit_cleanup_time_menu(self, query, topic_name):
+        """Меню настройки времени очистки для конкретной темы."""
+        data = self.monitored_topics.get(topic_name)
+        if not data:
+            await query.answer("❌ Тема не найдена.", show_alert=True)
+            return await self._edit_monitored_topics_menu(query)
+            
+        current_time = data.get('cleanup_time', '18:00')
+        
+        keyboard = [
+            [InlineKeyboardButton(f"⏰ Изменить время: {current_time} UTC", callback_data=f"set_cleanup_time_{topic_name}")],
+            [InlineKeyboardButton(f"🗑️ Удалить '{topic_name}' из мониторинга", callback_data=f"delete_monitor_{topic_name}")],
+            [InlineKeyboardButton("🔙 Назад к списку тем", callback_data="back_monitor")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"🛠️ **Настройка очистки для темы '{topic_name}'**\n\n"
+            f"Текущее время ежедневной очистки установлено на **{current_time} UTC**.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
+    async def _edit_monitored_topics_menu_after_input(self, chat_id):
+        """Отправка нового меню мониторинга после текстового ввода."""
+        
+        if not self.monitored_topics:
+            keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
+            return await self.bot.send_message(chat_id, "❌ **Нет зарегистрированных тем для авто-очистки.**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+        keyboard = []
+        for name, data in self.monitored_topics.items():
+            cleanup_time = data.get('cleanup_time', '18:00')
+            keyboard.append([InlineKeyboardButton(f"🧹 {name} ({cleanup_time} UTC)", callback_data=f"select_monitor_{name}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await self.bot.send_message(
+            chat_id,
+            "🧹 **Настройка авто-очистки**\n\n"
+            "Выберите тему, чтобы изменить время ежедневной очистки.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
+    # --- МЕНЮ ЕЖЕДНЕВНЫХ ПРИВЕТСТВИЙ ---
+
+    async def _edit_daily_messages_menu(self, query):
+        """Меню для настройки ежедневных приветствий (на всю неделю)."""
+        target_name = self.get_current_target_name() or "❌ Не задана"
+        # ЭТА КНОПКА ВОССТАНОВЛЕНА
+        status = "Включено ✅" if self.welcome_mode and self.target_chat_id and self.daily_messages else "Выключено ❌"
+        
+        day_buttons = []
+        for i in range(7):
+            day = self.get_day_name(i)
+            status_day = "📝 Задано" if str(i) in self.daily_messages else "➕ Добавить"
+            day_buttons.append(InlineKeyboardButton(f"{day}: {status_day}", callback_data=f"select_day_{i}"))
+        
+        keyboard = []
+        for i in range(0, len(day_buttons), 2):
+            row = [day_buttons[i]]
+            if i + 1 < len(day_buttons):
+                row.append(day_buttons[i+1])
+            keyboard.append(row)
+
+        keyboard.append([InlineKeyboardButton(f"🎯 Целевая тема: {target_name}", callback_data="set_target_topic")])
+        keyboard.append([InlineKeyboardButton(f"▶️ Статус: {status}", callback_data="toggle_welcome_mode")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📅 **Ежедневные Приветствия**\n\n"
+            f"**Статус системы:** {status}\n"
+            f"Сообщения отправляются в **{self.welcome_time} UTC** и удаляются в **{self.welcome_delete_time} UTC**.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+    
+    async def _send_daily_messages_menu(self, chat_id):
+        """Отправка НОВОГО сообщения меню ежедневных приветствий (после ввода текста)."""
+        target_name = self.get_current_target_name() or "❌ Не задана"
+        status = "Включено ✅" if self.welcome_mode and self.target_chat_id and self.daily_messages else "Выключено ❌"
+        
+        day_buttons = []
+        for i in range(7):
+            day = self.get_day_name(i)
+            status_day = "📝 Задано" if str(i) in self.daily_messages else "➕ Добавить"
+            day_buttons.append(InlineKeyboardButton(f"{day}: {status_day}", callback_data=f"select_day_{i}"))
+        
+        keyboard = []
+        for i in range(0, len(day_buttons), 2):
+            row = [day_buttons[i]]
+            if i + 1 < len(day_buttons):
+                row.append(day_buttons[i+1])
+            keyboard.append(row)
+
+        keyboard.append([InlineKeyboardButton(f"🎯 Целевая тема: {target_name}", callback_data="set_target_topic")])
+        keyboard.append([InlineKeyboardButton(f"▶️ Статус: {status}", callback_data="toggle_welcome_mode")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await self.bot.send_message(
+            chat_id,
+            "📅 **Ежедневные Приветствия**\n\n"
+            f"**Статус системы:** {status}\n"
+            f"Сообщения отправляются в **{self.welcome_time} UTC** и удаляются в **{self.welcome_delete_time} UTC**.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+    async def _edit_daily_message_day_menu(self, query, day_index):
+        """Меню для настройки сообщения на конкретный день."""
+        day_name = self.get_day_name(day_index)
+        current_message = self.daily_messages.get(str(day_index), "*Сообщение не задано.*")
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 Задать/Изменить текст", callback_data=f"set_message_{day_index}")],
+        ]
+        if str(day_index) in self.daily_messages:
+             keyboard.append([InlineKeyboardButton("🗑️ Удалить сообщение", callback_data=f"delete_message_{day_index}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 Назад к дням", callback_data="back_daily")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        display_message = current_message
+        if len(current_message) > 200:
+            display_message = current_message[:200] + "..."
+
+        await query.edit_message_text(
+            f"📅 **Сообщение для {day_name}**\n\n"
+            f"**Текущий текст:**\n"
+            f"```\n{display_message}\n```\n"
+            f"Используйте разметку Markdown для форматирования.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
+    async def _edit_target_topic_menu(self, query):
+        """Меню выбора целевой темы для приветствий."""
+        if not self.registered_topics:
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_daily")]]
+            return await query.edit_message_text(
+                "❌ **Нет зарегистрированных тем.**\n\n"
+                "Чтобы добавить тему, используйте команду `/registertopic [ИМЯ ТЕМЫ]` в нужной теме в вашей группе.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        
+        keyboard = []
+        for name, data in self.registered_topics.items():
+            status = "✅" if self.target_chat_id == data['chat_id'] and self.target_thread_id == data['thread_id'] else " "
+            keyboard.append([InlineKeyboardButton(f"{status} {name}", callback_data=f"select_topic:{name}")])
+
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_daily")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text("🎯 **Выберите, куда отправлять приветствия:**", reply_markup=reply_markup)
 
     # -----------------------------------------------------------------
-    # ГЕНЕРАЛЬНЫЙ CALLBACK-ОБРАБОТЧИК
+    # ГЕНЕРАЛЬНЫЙ CALLBACK-ОБРАБОТЧИК (ОБРАБОТКА ВСЕХ НАЖАТИЙ)
     # -----------------------------------------------------------------
 
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -727,10 +933,7 @@ class DailyMessageBot:
 # Код, который запускает класс
 if __name__ == '__main__':
     if BOT_TOKEN:
-        # NOTE: Мы не используем Application.builder().build() дважды.
-        # Просто передаем его DailyMessageBot, который сам запускает run_polling.
         bot_instance = DailyMessageBot(Application.builder().token(BOT_TOKEN).build())
         bot_instance.run()
     else:
-        # sys.exit(1) уже вызывается в начале
         pass
