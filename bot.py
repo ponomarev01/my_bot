@@ -1,6 +1,33 @@
 import logging
 import json
 import os
+# --- НАЧАЛО БЛОКА: ИСПРАВЛЕНИЕ IMGHDR ДЛЯ PYTHON 3.13 ---
+# Этот блок необходим, потому что python-telegram-bot v13 использует imghdr, 
+# который удален в Python 3.13.
+import sys
+try:
+    import imghdr
+except ImportError:
+    try:
+        import filetype # Требует добавления 'filetype' в requirements.txt
+        def fix_imghdr(path):
+            kind = filetype.guess(path)
+            return kind.extension if kind else None
+        
+        class ImghdrModule:
+            def what(self, filename):
+                return fix_imghdr(filename)
+            # Добавляем фиктивные функции, если v13 вызывает их напрямую
+            def test_jpeg(self, h, f): return 'jpeg' if b'\xff\xd8' in h else None
+            def test_png(self, h, f): return 'png' if h.startswith(b'\x89PNG\r\n\x1a\n') else None
+
+        imghdr = ImghdrModule()
+        sys.modules['imghdr'] = imghdr
+    except ImportError:
+        # Если и filetype не удалось импортировать (ошибка в requirements.txt)
+        print("CRITICAL ERROR: 'filetype' module not found. Please check requirements.txt")
+        raise
+# --- КОНЕЦ БЛОКА ИСПРАВЛЕНИЯ ---
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
 from telegram.ext import (
