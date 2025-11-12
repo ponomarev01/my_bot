@@ -63,11 +63,6 @@ class DailyMessageBot:
         self.last_query = {} 
 
 
-    async def post_init_hook(self, application: Application):
-        """Хук для инициализации планировщика после запуска бота."""
-        if not self.scheduler:
-            self.scheduler = self.setup_schedulers()
-        
     # --- Управление данными ---
         
     def load_data(self):
@@ -102,12 +97,13 @@ class DailyMessageBot:
 
     def setup_schedulers(self):
         """Настройка и запуск планировщика."""
-        scheduler = AsyncIOScheduler(timezone=pytz.utc)
+        # Используем существующий атрибут
+        self.scheduler = AsyncIOScheduler(timezone=pytz.utc)
         
         hour = 9
         minute = 0
         
-        scheduler.add_job(
+        self.scheduler.add_job(
             self.send_welcome_message_job, 
             'cron', 
             hour=hour, 
@@ -116,7 +112,7 @@ class DailyMessageBot:
             replace_existing=True
         )
         
-        scheduler.add_job(
+        self.scheduler.add_job(
             self.delete_welcome_message_job, 
             'cron', 
             hour=hour, 
@@ -125,10 +121,10 @@ class DailyMessageBot:
             replace_existing=True
         )
 
-        if not scheduler.running:
-            scheduler.start()
+        if not self.scheduler.running:
+            self.scheduler.start()
             logger.info(f"Планировщик запущен. Отправка: {hour}:{minute} UTC, Удаление: {hour}:{minute+5} UTC.")
-        return scheduler
+        return self.scheduler
 
     async def send_welcome_message_job(self):
         """Задача планировщика: Ежедневная отправка приветствия в целевую тему."""
@@ -966,10 +962,12 @@ def main():
     # 2. Личные сообщения (для ввода настроек)
     application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, bot_instance.handle_text_input)) 
 
+    # --- ИСПРАВЛЕНИЕ: Запуск планировщика до run_polling (для старых версий) ---
+    bot_instance.setup_schedulers()
+
     # Запуск
     logger.info("Бот запущен.")
-    # post_init для планировщика
-    application.run_polling(post_init=bot_instance.post_init_hook, allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
