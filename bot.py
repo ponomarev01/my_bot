@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ВАЖНАЯ НАСТРОЙКА ТОКЕНА
 # -----------------------------------------------------------------------------
 # Токен считывается из переменной окружения BOT_TOKEN
-BOT_TOKEN = os.environ.get("8525784017:AAFLa_6Guk5_w4TekVQqjSxVliOFiPk9CXA") 
+BOT_TOKEN = os.environ.get("BOT_TOKEN") 
 if not BOT_TOKEN:
     logger.error("Переменная окружения BOT_TOKEN не найдена. Убедитесь, что она установлена в настройках хостинга или прописана в коде.")
     sys.exit(1)
