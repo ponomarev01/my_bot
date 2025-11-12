@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ВАЖНАЯ НАСТРОЙКА
 # -----------------------------------------------------------------------------
 # ⚠️ ЗАМЕНИТЕ ЭТОТ ТОКЕН НА СВОЙ! 
-BOT_TOKEN = "8525784017:AAGyonwOxkChbavfqMhT1e4IFLa89mgt_Ys" 
+BOT_TOKEN = "8525784017:AAFLa_6Guk5_w4TekVQqjSxVliOFiPk9CXA" 
 # -----------------------------------------------------------------------------
 
 class DailyMessageBot:
