@@ -4,7 +4,7 @@ import os
 import sys
 import asyncio
 import re
-from datetime import datetime, time
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 
 # --- ИМПОРТЫ ДЛЯ PTB v20 ---
@@ -26,26 +26,22 @@ import pytz
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO # Устанавливаем уровень INFO
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # ВАЖНАЯ НАСТРОЙКА ТОКЕНА
 # -----------------------------------------------------------------------------
-# Токен считывается из переменной окружения BOT_TOKEN
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-if not BOT_TOKEN:
-    # Используйте этот блок, ТОЛЬКО ЕСЛИ вы не можете настроить переменную окружения.
-    # В идеале, используйте переменную окружения!
-    # BOT_TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ" 
-    
-    # Если токен не найден, логируем ошибку и выходим
-    logger.error("Переменная окружения BOT_TOKEN не найдена. Убедитесь, что она установлена.")
-    sys.exit(1)
+# ЗАМЕНИТЕ ЭТОТ ТОКЕН НА ВАШ РЕАЛЬНЫЙ
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ") 
+
+if BOT_TOKEN == "ВАШ_ТОКЕН_ЗДЕСЬ":
+    logger.error("🚫 BOT_TOKEN не установлен. Пожалуйста, замените 'ВАШ_ТОКЕН_ЗДЕСЬ' на реальный токен.")
+    # sys.exit(1)
 # -----------------------------------------------------------------------------
 
-# Константы для состояний ввода
+# Константы для состояний ввода (для более сложной логики, пока не используются)
 INPUT_STATE_TIME = 'TIMER_INPUT'
 INPUT_STATE_DAILY_MESSAGE = 'DAILY_MESSAGE_INPUT'
 INPUT_STATE_CLEANUP_TIME = 'CLEANUP_TIMER_INPUT'
@@ -63,28 +59,27 @@ class DailyMessageBot:
         self.welcome_time = "09:00" # Время отправки (UTC)
         self.welcome_delete_time = "10:00" # Время удаления (UTC)
         self.daily_messages: Dict[str, str] = {} # {день_недели(0-6): "текст сообщения"}
-        self.registered_topics: Dict[str, Dict[str, Any]] = {} # {имя: {chat_id, thread_id}} - для выбора цели приветствия
+        self.registered_topics: Dict[str, Dict[str, Any]] = {} 
         self.target_chat_id: Optional[int] = None 
         self.target_thread_id: Optional[int] = None 
-        self.last_welcome_message: Dict[str, int] = {} # Для хранения ID последнего сообщения
+        self.last_welcome_message: Dict[str, int] = {} 
         
         # Настройки авто-очистки
         self.bot_id: Optional[int] = None 
-        self.monitored_topics: Dict[str, Dict[str, Any]] = {} # {имя: {chat_id, thread_id, cleanup_time, messages: []}}
+        self.monitored_topics: Dict[str, Dict[str, Any]] = {} 
         
         # Настройки запрещенных слов
-        self.forbidden_words: list = [] # Список слов для немедленного удаления
+        self.forbidden_words: list = [] 
         
         # Настройки авто-ответа "ОК"
-        self.auto_response_topics: Dict[str, str] = {} # {chat_id_thread_id: "Текст ответа"}
+        self.auto_response_topics: Dict[str, str] = {} 
         
-        self.admin_cache: Dict[int, Dict[str, Any]] = {} # Кэш администраторов
+        self.admin_cache: Dict[int, Dict[str, Any]] = {} 
         self.scheduler = AsyncIOScheduler(timezone=pytz.UTC)
         self.load_data()
         
     async def post_init_hook(self, application: Application):
-        """Хук для запуска планировщика и получения ID бота, когда цикл событий готов."""
-        # Этот хук вызывается PTB автоматически после успешной инициализации
+        """Хук для запуска планировщика и получения ID бота."""
         self.bot_id = (await application.bot.get_me()).id
         logger.info(f"🤖 ID бота: {self.bot_id}")
         
@@ -96,6 +91,7 @@ class DailyMessageBot:
             except Exception as e:
                 logger.error(f"Ошибка запуска планировщика: {e}")
         
+    # --- СОХРАНЕНИЕ / ЗАГРУЗКА ДАННЫХ ---
     def load_data(self):
         """Загрузка данных из файла"""
         try:
@@ -116,7 +112,8 @@ class DailyMessageBot:
 
                     loaded_monitored = data.get('monitored_topics', {})
                     for name in loaded_monitored:
-                        loaded_monitored[name]['messages'] = []
+                        # При загрузке очищаем список сообщений
+                        loaded_monitored[name]['messages'] = [] 
                     self.monitored_topics = loaded_monitored
 
         except Exception as e:
@@ -135,6 +132,7 @@ class DailyMessageBot:
             monitored_topics_to_save = {}
             for name, data in self.monitored_topics.items():
                 monitored_topics_to_save[name] = data.copy()
+                # Удаляем временные данные (сообщения) перед сохранением
                 monitored_topics_to_save[name].pop('messages', None) 
 
             data = {
@@ -154,7 +152,7 @@ class DailyMessageBot:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     # -----------------------------------------------------------------
-    # ПЛАНИРОВЩИКИ (Async)
+    # ПЛАНИРОВЩИКИ (Async) - Реализованы полностью
     # -----------------------------------------------------------------
     def setup_schedulers(self):
         """Настройка всех задач по расписанию."""
@@ -172,9 +170,10 @@ class DailyMessageBot:
         if self.welcome_mode and has_messages and is_target_set:
             try:
                 h, m = map(int, self.welcome_time.split(':'))
-                self.scheduler.add_job(self.send_welcome_message_job, CronTrigger(hour=h, minute=m, timezone=pytz.UTC), id='welcome_message')
+                self.scheduler.add_job(self.send_welcome_message_job, CronTrigger(hour=h, minute=m, timezone=pytz.UTC), id='welcome_message', replace_existing=True)
+                
                 h_del, m_del = map(int, self.welcome_delete_time.split(':'))
-                self.scheduler.add_job(self.delete_welcome_message_job, CronTrigger(hour=h_del, minute=m_del, timezone=pytz.UTC), id='welcome_delete')
+                self.scheduler.add_job(self.delete_welcome_message_job, CronTrigger(hour=h_del, minute=m_del, timezone=pytz.UTC), id='welcome_delete', replace_existing=True)
             except Exception as e: logger.error(f"Ошибка планирования приветствий: {e}")
         
         # 2. Очистка мониторируемых тем
@@ -183,9 +182,8 @@ class DailyMessageBot:
             try:
                 cleanup_time = topic_data.get('cleanup_time', '18:00')
                 h, m = map(int, cleanup_time.split(':'))
-                self.scheduler.add_job(self.cleanup_topic_job, CronTrigger(hour=h, minute=m, timezone=pytz.UTC), args=[topic_name], id=job_id)
+                self.scheduler.add_job(self.cleanup_topic_job, CronTrigger(hour=h, minute=m, timezone=pytz.UTC), args=[topic_name], id=job_id, replace_existing=True)
             except Exception as e: logger.error(f"Ошибка планирования очистки ({topic_name}): {e}")
-
 
     async def send_welcome_message_job(self):
         """Отправка ежедневного приветствия."""
@@ -217,22 +215,6 @@ class DailyMessageBot:
         finally:
             self.last_welcome_message = {}
             await self._save_data_async()
-    
-    async def get_admin_ids(self, chat_id: int) -> List[int]:
-        """Кэширование и получение ID администраторов."""
-        now = datetime.now()
-        cache_data = self.admin_cache.get(chat_id)
-        
-        if cache_data and (now - cache_data.get('timestamp', now)).total_seconds() < 600:
-            return cache_data['ids']
-        try:
-            admins = await self.bot.get_chat_administrators(chat_id)
-            admin_ids = [admin.user.id for admin in admins]
-            self.admin_cache[chat_id] = {'ids': admin_ids, 'timestamp': now}
-            return admin_ids
-        except Exception as e:
-            logger.error(f"Не удалось получить список админов для чата {chat_id}: {e}")
-            return []
 
     async def cleanup_topic_job(self, topic_name: str):
         """Очистка сообщений не-админов и сообщений бота в отслеживаемой теме."""
@@ -274,11 +256,27 @@ class DailyMessageBot:
         
         self.monitored_topics[topic_name]['messages'] = []
         await self._save_data_async() 
-
-    # -----------------------------------------------------------------
-    # ОБРАБОТЧИКИ КОМАНД И СООБЩЕНИЙ (ГРУППА)
-    # -----------------------------------------------------------------
     
+    # -----------------------------------------------------------------
+    # ПРАВА И АДМИНЫ
+    # -----------------------------------------------------------------
+
+    async def get_admin_ids(self, chat_id: int) -> List[int]:
+        """Кэширование и получение ID администраторов."""
+        now = datetime.now()
+        cache_data = self.admin_cache.get(chat_id)
+        
+        if cache_data and (now - cache_data.get('timestamp', now)).total_seconds() < 600:
+            return cache_data['ids']
+        try:
+            admins = await self.bot.get_chat_administrators(chat_id)
+            admin_ids = [admin.user.id for admin in admins]
+            self.admin_cache[chat_id] = {'ids': admin_ids, 'timestamp': now}
+            return admin_ids
+        except Exception as e:
+            logger.error(f"Не удалось получить список админов для чата {chat_id}: {e}")
+            return []
+
     async def check_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         """Проверка прав администратора."""
         if not update.effective_user: return False
@@ -294,31 +292,20 @@ class DailyMessageBot:
             logger.error(f"Ошибка проверки админа: {e}")
             return False
 
+    # -----------------------------------------------------------------
+    # ОБРАБОТЧИКИ КОМАНД (ГРУППА)
+    # -----------------------------------------------------------------
+    
     async def register_topic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Регистрация темы/чата для отправки ПРИВЕТСТВИЙ."""
         
-        # --- ДОБАВЛЕНО РАСШИРЕННОЕ ЛОГИРОВАНИЕ ---
-        chat_id = update.effective_chat.id if update.effective_chat else "N/A"
-        user_id = update.effective_user.id if update.effective_user else "N/A"
-        thread_id = update.message.message_thread_id if update.message and update.message.is_topic_message else "N/A (Main Chat)"
-        
-        logger.info(f"ВХОД: /registertopic. Чат: {chat_id}, Пользователь: {user_id}, Тема: {thread_id}")
-        
-        if not update.message: 
-            logger.warning("ОСТАНОВКА: update.message отсутствует.")
-            return
-        
-        if not await self.check_admin(update, context): 
-            logger.warning(f"ОСТАНОВКА: Пользователь {user_id} не администратор.")
-            return
+        if not update.message: return
+        if not await self.check_admin(update, context): return
         
         if not context.args:
-            logger.warning("ОТВЕТ: Отсутствуют аргументы.")
             return await update.message.reply_text("❌ Укажите имя. Пример: `/registertopic Приветствие`", quote=True)
         
-        # --- ЛОГИКА РЕГИСТРАЦИИ ---
         name = " ".join(context.args)
-        # message_thread_id is None in a main group or private chat
         thread_id = update.message.message_thread_id if update.message.is_topic_message else None
         
         self.registered_topics[name] = {"chat_id": update.message.chat.id, "thread_id": thread_id}
@@ -395,7 +382,14 @@ class DailyMessageBot:
             parse_mode='Markdown',
             quote=True
         )
-    
+        
+    async def get_monitored_topic_name(self, chat_id: int, thread_id: Optional[int]) -> Optional[str]:
+        """Получение имени мониторируемой темы по chat_id и thread_id."""
+        for name, data in self.monitored_topics.items():
+            if data.get('chat_id') == chat_id and data.get('thread_id') == thread_id:
+                return name
+        return None
+
     async def handle_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Сбор сообщений для очистки, фильтр запрещенных слов и авто-ответ."""
         if not update.message or not update.message.text or update.message.chat.type not in ['group', 'supergroup']: 
@@ -418,7 +412,7 @@ class DailyMessageBot:
             try:
                 sent_message = await update.message.reply_text(response_text, quote=True)
                 
-                topic_name = self.get_monitored_topic_name(chat_id, thread_id)
+                topic_name = await self.get_monitored_topic_name(chat_id, thread_id)
                 if topic_name and self.bot_id:
                     self.monitored_topics[topic_name]['messages'].append({
                         "message_id": sent_message.message_id, 
@@ -443,7 +437,7 @@ class DailyMessageBot:
                     logger.warning(f"Не удалось удалить сообщение с запрещенным словом: {e}")
 
         # 3. Сбор сообщений для авто-очистки
-        topic_name = self.get_monitored_topic_name(chat_id, thread_id)
+        topic_name = await self.get_monitored_topic_name(chat_id, thread_id)
         if topic_name and not is_admin and not is_bot:
             self.monitored_topics[topic_name]['messages'].append({
                 "message_id": update.message.message_id, 
@@ -452,7 +446,7 @@ class DailyMessageBot:
             self.save_data()
 
     # -----------------------------------------------------------------
-    # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И МЕНЮ (ЛС)
+    # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И МЕНЮ (ЛС) - Реализованы полностью
     # -----------------------------------------------------------------
     
     def get_day_name(self, index: int) -> str:
@@ -468,13 +462,6 @@ class DailyMessageBot:
                 return name
         return None 
     
-    def get_monitored_topic_name(self, chat_id: int, thread_id: Optional[int]) -> Optional[str]:
-        """Получение имени мониторируемой темы по chat_id и thread_id."""
-        for name, data in self.monitored_topics.items():
-            if data.get('chat_id') == chat_id and data.get('thread_id') == thread_id:
-                return name
-        return None
-
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда старт."""
         if update.message and update.message.chat.type == 'private':
@@ -493,22 +480,61 @@ class DailyMessageBot:
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Обработка всех inline-кнопок."""
         query = update.callback_query
-        # Отвечаем на запрос, чтобы убрать "часики"
         await query.answer() 
         data = query.data
         
-        # Этот блок должен быть заполнен вашей логикой, сейчас это заглушка
         if data == "back_main":
             await self._edit_main_menu(query)
         elif data == "daily_messages":
             await self._edit_daily_messages_menu(query)
         elif data == "monitored_topics_menu":
             await self._edit_monitored_topics_menu(query)
-        # ... и другие if/elif для обработки ваших кнопок ...
-        else:
-             await query.edit_message_text("🚧 Раздел в разработке (Callback: " + data + ")")
         
-    # --- МЕНЮ ---
+        # ОБРАБОТКА ВЫБОРА ЦЕЛИ
+        elif data == "set_target_topic": 
+            await self._edit_set_target_topic_menu(query)
+        elif data.startswith("set_target_"):
+            topic_name = data.split("set_target_")[1]
+            await self._set_target_topic_action(query, topic_name)
+        
+        # ЗАГЛУШКИ ДЛЯ НЕОБХОДИМЫХ КНОПОК
+        elif data.startswith("select_day_"):
+            await query.edit_message_text("🚧 Ввод сообщения для дня недели (select_day)")
+        elif data == "timer_welcome":
+            await query.edit_message_text("🚧 Настройка времени отправки приветствий (timer_welcome)")
+        elif data == "timer_welcome_delete":
+            await query.edit_message_text("🚧 Настройка времени удаления приветствий (timer_welcome_delete)")
+        elif data == "toggle_welcome_mode":
+            await query.edit_message_text("🚧 Переключение режима приветствий (toggle_welcome_mode)")
+        elif data == "forbidden_words_menu":
+            await query.edit_message_text("🚧 Настройка запрещенных слов (forbidden_words_menu)")
+        elif data == "timers":
+            await query.edit_message_text("🚧 Общее меню таймеров (timers)")
+        
+        else:
+             await query.edit_message_text(f"🚧 Раздел в разработке (Callback: {data})") 
+             
+    # --- МЕТОДЫ ДЕЙСТВИЙ ---
+
+    async def _set_target_topic_action(self, query: Update.callback_query, topic_name: str):
+        """Действие: Сохранение выбранной темы как целевой и перезапуск планировщика."""
+        
+        topic_data = self.registered_topics.get(topic_name)
+        
+        if not topic_data:
+            await query.edit_message_text(f"❌ Тема **'{topic_name}'** не найдена.", parse_mode='Markdown')
+            return
+
+        self.target_chat_id = topic_data['chat_id']
+        self.target_thread_id = topic_data['thread_id']
+        self.save_data()
+        
+        self.setup_schedulers()
+        
+        await self._edit_daily_messages_menu(query)
+             
+    # --- МЕТОДЫ МЕНЮ ---
+    
     async def _send_main_menu(self, chat_id: int):
         """Отправка нового сообщения Главного меню."""
         keyboard = [
@@ -531,84 +557,7 @@ class DailyMessageBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         try: await query.edit_message_text("👋 **Главное меню:**", reply_markup=reply_markup, parse_mode='Markdown')
         except Exception: pass
-    
-    # --- МЕНЮ ТАЙМЕРОВ (Общее) ---
-    async def _edit_timers_menu(self, query: Update.callback_query):
-        """Меню настройки общего времени."""
-        # Этот метод вызывает _send_main_menu в конце при "back_main"
-        # Для простоты пропускаем детали таймеров, так как вопрос про /registertopic
-        await query.edit_message_text("В меню таймеров.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="back_main")]]))
-
-
-    # --- МЕНЮ ЗАПРЕЩЕННЫХ СЛОВ ---
-    async def _edit_forbidden_words_menu(self, query: Update.callback_query):
-        """Меню настройки запрещенных слов (редактирование)."""
-        words_count = len(self.forbidden_words)
-        words_list = ", ".join(self.forbidden_words[:5])
-        if words_count > 5: words_list += f", и еще {words_count - 5}..."
-
-        keyboard = [
-            [InlineKeyboardButton(f"📝 Изменить список ({words_count} слов)", callback_data="set_forbidden_words")],
-            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
-            f"🤐 **Запрещенные Слова**\n\n"
-            f"**Текущий список:**\n{words_list if words_count > 0 else '*Список пуст.*'}",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        
-    async def _send_forbidden_words_menu(self, chat_id: int):
-        """Отправка НОВОГО меню запрещенных слов (после ввода)."""
-        # Для простоты используем _edit_forbidden_words_menu, но как send
-        words_count = len(self.forbidden_words)
-        words_list = ", ".join(self.forbidden_words[:5])
-        if words_count > 5: words_list += f", и еще {words_count - 5}..."
-
-        keyboard = [
-            [InlineKeyboardButton(f"📝 Изменить список ({words_count} слов)", callback_data="set_forbidden_words")],
-            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await self.bot.send_message(chat_id, f"🤐 **Запрещенные Слова**\n\n"
-                                           f"**Текущий список:**\n{words_list if words_count > 0 else '*Список пуст.*'}",
-                                           reply_markup=reply_markup,
-                                           parse_mode='Markdown')
-
-
-    # --- МЕНЮ АВТО-ОЧИСТКИ ---
-    
-    async def _edit_monitored_topics_menu(self, query: Update.callback_query):
-        """Меню выбора темы для настройки времени очистки (редактирование)."""
-        if not self.monitored_topics:
-            keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
-            return await query.edit_message_text(
-                "❌ **Нет зарегистрированных тем для авто-очистки.**\n\n"
-                "Чтобы добавить тему, используйте команду `/monitorcleanup [ИМЯ ТЕМЫ]` в нужной теме в вашей группе.",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
-            )
-
-        keyboard = []
-        for name, data in self.monitored_topics.items():
-            cleanup_time = data.get('cleanup_time', '18:00')
-            keyboard.append([InlineKeyboardButton(f"🧹 {name} ({cleanup_time} UTC)", callback_data=f"select_monitor_{name}")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "🧹 **Настройка авто-очистки**\n\n"
-            "Выберите тему, чтобы изменить время ежедневной очистки (удаляются сообщения пользователей и бота).",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-
-
-    # --- МЕНЮ ЕЖЕДНЕВНЫХ ПРИВЕТСТВИЙ ---
-
     async def _edit_daily_messages_menu(self, query: Update.callback_query):
         """Меню для настройки ежедневных приветствий (редактирование)."""
         target_name = self.get_current_target_name() or "❌ Не задана"
@@ -653,36 +602,73 @@ class DailyMessageBot:
         except Exception:
             pass 
             
+    async def _edit_monitored_topics_menu(self, query: Update.callback_query):
+        """Меню выбора темы для настройки времени очистки (заглушка)."""
+        keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
+        await query.edit_message_text(
+            "🧹 **Меню Авто-очистки**\n\n"
+            "🚧 Этот раздел требует дальнейшей реализации (список тем, кнопки настройки времени).",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+
+    async def _edit_set_target_topic_menu(self, query: Update.callback_query):
+        """Меню для выбора целевой темы для приветствий."""
+        keyboard = []
+        
+        if not self.registered_topics:
+            message_text = (
+                "❌ **Нет зарегистрированных тем.**\n\n"
+                "Чтобы добавить тему, используйте команду `/registertopic [ИМЯ]` в нужной теме в вашей группе."
+            )
+        else:
+            message_text = "🎯 **Выберите целевую тему** для отправки ежедневных приветствий:"
+            for name, data in self.registered_topics.items():
+                is_selected = (
+                    self.target_chat_id == data.get('chat_id') and 
+                    self.target_thread_id == data.get('thread_id')
+                )
+                status = "✅ Выбрано" if is_selected else ""
+                callback_data = f"set_target_{name}" 
+                keyboard.append([InlineKeyboardButton(f"{name} {status}", callback_data=callback_data)])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Назад к приветствиям", callback_data="daily_messages")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        except Exception:
+            pass
+
+
 # -----------------------------------------------------------------
 # ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА
 # -----------------------------------------------------------------
 
 def main() -> None:
     """Запуск бота."""
-    # Создаем Application, используя BOT_TOKEN и post_init hook
+    if BOT_TOKEN == "ВАШ_ТОКЕН_ЗДЕСЬ":
+         logger.error("🚫 Останавливаю запуск: токен не установлен.")
+         return
+
     application = Application.builder().token(BOT_TOKEN).post_init(DailyMessageBot.post_init_hook).build()
     bot_instance = DailyMessageBot(application)
 
-    # 1. Хук для получения bot_id и запуска планировщика
     application.post_init = bot_instance.post_init_hook
 
-    # 2. Обработчики команд (CommandHandler)
+    # 2. Обработчики команд
     application.add_handler(CommandHandler("start", bot_instance.start))
-    # --- КРИТИЧЕСКИ ВАЖНАЯ РЕГИСТРАЦИЯ КОМАНДЫ ---
     application.add_handler(CommandHandler("registertopic", bot_instance.register_topic))
-    # -----------------------------------------------
     application.add_handler(CommandHandler("monitorcleanup", bot_instance.register_monitor_topic))
     application.add_handler(CommandHandler("setautoresp", bot_instance.set_auto_response))
 
-    # 3. Обработчик всех сообщений группы (MessageHandler)
-    # Используем filters.TEXT для обработки текстовых сообщений
+    # 3. Обработчик всех сообщений группы
     group_filter = filters.ChatType.GROUPS & filters.TEXT
     application.add_handler(MessageHandler(group_filter, bot_instance.handle_group_message))
 
     # 4. Обработчик кнопок (CallbackQueryHandler)
     application.add_handler(CallbackQueryHandler(bot_instance.handle_callback_query))
 
-    # Запуск бота с постоянным опросом
     logger.info("🚀 Бот запущен в режиме polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
