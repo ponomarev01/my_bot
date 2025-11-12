@@ -64,6 +64,8 @@ class DailyMessageBot:
         self.last_welcome_message: Dict[str, int] = {} # Для хранения ID последнего сообщения
         
         # Настройки авто-очистки
+        # Добавляем 'bot_id' для идентификации своих сообщений в группе
+        self.bot_id = None 
         self.monitored_topics: Dict[str, Dict[str, Any]] = {} # {имя: {chat_id, thread_id, cleanup_time, messages: []}}
         
         # Настройки запрещенных слов
@@ -77,7 +79,10 @@ class DailyMessageBot:
         self.load_data()
         
     async def post_init_hook(self, application: Application):
-        """Хук для запуска планировщика, когда цикл событий готов."""
+        """Хук для запуска планировщика и получения ID бота, когда цикл событий готов."""
+        self.bot_id = (await application.bot.get_me()).id
+        logger.info(f"🤖 ID бота: {self.bot_id}")
+        
         self.setup_schedulers()
         if not self.scheduler.running:
             try:
@@ -234,7 +239,7 @@ class DailyMessageBot:
             return []
 
     async def cleanup_topic_job(self, topic_name):
-        """Очистка сообщений не-админов в отслеживаемой теме."""
+        """Очистка сообщений не-админов и сообщений бота в отслеживаемой теме."""
         logger.info(f"🧹 Запуск очистки для темы: {topic_name}")
         if topic_name not in self.monitored_topics: return
             
@@ -256,8 +261,12 @@ class DailyMessageBot:
         
         # Удаление в цикле
         for msg in messages_to_delete:
-            # Удаляем, если пользователь не администратор
-            if msg['user_id'] not in admin_ids:
+            user_id = msg['user_id']
+            # Удаляем, если: 1) пользователь не администратор ИЛИ 2) это сообщение от самого бота
+            is_non_admin = user_id not in admin_ids
+            is_bot_message = user_id == self.bot_id
+            
+            if is_non_admin or is_bot_message:
                 try:
                     await self.bot.delete_message(chat_id=chat_id, message_id=msg['message_id'], message_thread_id=topic_data['thread_id'])
                     deleted_count += 1
@@ -327,8 +336,8 @@ class DailyMessageBot:
         topic_info = f"Тема **'{name}'**" if thread_id else f"Чат **'{name}'**"
         await update.message.reply_text(
             f"✅ {topic_info} зарегистрирован(а) для **АВТО-ОЧИСТКИ**.\n"
-            f"Не-админские сообщения будут удаляться в **{self.monitored_topics[name]['cleanup_time']} UTC**.\n"
-            f"Для настройки времени используйте меню.", 
+            f"Не-админские сообщения и сообщения бота будут удаляться в **{self.monitored_topics[name]['cleanup_time']} UTC**.\n"
+            f"Для настройки времени используйте меню в ЛС.", 
             parse_mode='Markdown',
             quote=True
         )
@@ -384,16 +393,23 @@ class DailyMessageBot:
         is_admin = user_id in admin_ids
         is_bot = update.message.from_user.is_bot
         
-        if is_bot: return # Игнорируем сообщения от других ботов
-        
         # 1. Автоматический ответ "ОК" в нужной теме (только для НЕ-админов)
         key = f"{chat_id}_{thread_id}"
         if key in self.auto_response_topics and not is_admin:
             response_text = self.auto_response_topics[key]
             try:
                 # Отвечаем на сообщение пользователя в его теме
-                await update.message.reply_text(response_text, quote=True)
+                sent_message = await update.message.reply_text(response_text, quote=True)
                 logger.info(f"✅ Автоматический ответ '{response_text}' отправлен в теме {thread_id}.")
+                
+                # Сообщение бота тоже нужно добавить в список для очистки
+                topic_name = self.get_monitored_topic_name(chat_id, thread_id)
+                if topic_name:
+                    self.monitored_topics[topic_name]['messages'].append({
+                        "message_id": sent_message.message_id, 
+                        "user_id": self.bot_id # Используем ID бота
+                    })
+
             except Exception as e:
                 logger.error(f"Ошибка отправки авто-ответа: {e}")
 
@@ -412,12 +428,13 @@ class DailyMessageBot:
 
         # 3. Сбор сообщений для авто-очистки (только для НЕ-админов)
         topic_name = self.get_monitored_topic_name(chat_id, thread_id)
-        if topic_name and not is_admin:
+        if topic_name and not is_admin and not is_bot:
             # Сохраняем сообщение только если оно от обычного пользователя
             self.monitored_topics[topic_name]['messages'].append({
                 "message_id": update.message.message_id, 
                 "user_id": user_id
             })
+            self.save_data() # Сохраняем после добавления сообщения пользователя (или бота)
 
     # -----------------------------------------------------------------
     # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ И МЕНЮ (ЛС)
@@ -446,6 +463,12 @@ class DailyMessageBot:
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда старт."""
         if update.message and update.message.chat.type == 'private':
+            # Очистка состояния ввода при старте
+            context.user_data.pop('next_action', None)
+            context.user_data.pop('day_index', None)
+            context.user_data.pop('monitor_topic_name', None)
+            context.user_data.pop('timer_key', None)
+            context.user_data.pop('return_to_daily_menu', None)
             await self._send_main_menu(update.message.chat_id)
         elif update.message:
              await update.message.reply_text("Для управления ботом используйте личные сообщения.", quote=True)
@@ -486,14 +509,14 @@ class DailyMessageBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "⏰ **Настройка времени (UTC)**\n\n"
-            "Установите время для **ежедневной отправки** и **удаления** приветственных сообщений.",
+            "Установите время для **ежедневной отправки** и **удаления** приветственных сообщений. (Эти же настройки доступны в меню 'Ежедневные Приветствия')",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
     
     # --- МЕНЮ ЗАПРЕЩЕННЫХ СЛОВ ---
     async def _edit_forbidden_words_menu(self, query):
-        """Меню настройки запрещенных слов."""
+        """Меню настройки запрещенных слов (редактирование)."""
         
         words_count = len(self.forbidden_words)
         words_list = ", ".join(self.forbidden_words[:5])
@@ -512,11 +535,33 @@ class DailyMessageBot:
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        
+    async def _send_forbidden_words_menu(self, chat_id):
+        """Отправка НОВОГО меню запрещенных слов (после ввода)."""
+        words_count = len(self.forbidden_words)
+        words_list = ", ".join(self.forbidden_words[:5])
+        if words_count > 5: words_list += f", и еще {words_count - 5}..."
+
+        keyboard = [
+            [InlineKeyboardButton(f"📝 Изменить список ({words_count} слов)", callback_data="set_forbidden_words")],
+            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await self.bot.send_message(
+            chat_id,
+            f"🤐 **Запрещенные Слова**\n\n"
+            f"Сообщения, содержащие любое из этих слов, будут **немедленно и бесшумно удалены**.\n\n"
+            f"**Текущий список:**\n{words_list if words_count > 0 else '*Список пуст.*'}",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
 
     # --- МЕНЮ АВТО-ОЧИСТКИ ---
     
     async def _edit_monitored_topics_menu(self, query):
-        """Меню выбора темы для настройки времени очистки."""
+        """Меню выбора темы для настройки времени очистки (редактирование)."""
         if not self.monitored_topics:
             keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
             return await query.edit_message_text(
@@ -536,13 +581,13 @@ class DailyMessageBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "🧹 **Настройка авто-очистки**\n\n"
-            "Выберите тему, чтобы изменить время ежедневной очистки (удаляются только сообщения пользователей, не админов).",
+            "Выберите тему, чтобы изменить время ежедневной очистки (удаляются сообщения пользователей и бота).",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
     async def _edit_cleanup_time_menu(self, query, topic_name):
-        """Меню настройки времени очистки для конкретной темы."""
+        """Меню настройки времени очистки для конкретной темы (редактирование)."""
         data = self.monitored_topics.get(topic_name)
         if not data:
             await query.answer("❌ Тема не найдена.", show_alert=True)
@@ -565,8 +610,8 @@ class DailyMessageBot:
             parse_mode='Markdown'
         )
         
-    async def _edit_monitored_topics_menu_after_input(self, chat_id):
-        """Отправка нового меню мониторинга после текстового ввода."""
+    async def _send_monitored_topics_menu(self, chat_id):
+        """Отправка нового меню мониторинга (после ввода)."""
         
         if not self.monitored_topics:
             keyboard = [[InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")]]
@@ -591,9 +636,8 @@ class DailyMessageBot:
     # --- МЕНЮ ЕЖЕДНЕВНЫХ ПРИВЕТСТВИЙ ---
 
     async def _edit_daily_messages_menu(self, query):
-        """Меню для настройки ежедневных приветствий (на всю неделю)."""
+        """Меню для настройки ежедневных приветствий (редактирование)."""
         target_name = self.get_current_target_name() or "❌ Не задана"
-        # ЭТА КНОПКА ВОССТАНОВЛЕНА
         status = "Включено ✅" if self.welcome_mode and self.target_chat_id and self.daily_messages else "Выключено ❌"
         
         day_buttons = []
@@ -602,6 +646,7 @@ class DailyMessageBot:
             status_day = "📝 Задано" if str(i) in self.daily_messages else "➕ Добавить"
             day_buttons.append(InlineKeyboardButton(f"{day}: {status_day}", callback_data=f"select_day_{i}"))
         
+        # Кнопки дней недели
         keyboard = []
         for i in range(0, len(day_buttons), 2):
             row = [day_buttons[i]]
@@ -609,6 +654,12 @@ class DailyMessageBot:
                 row.append(day_buttons[i+1])
             keyboard.append(row)
 
+        # Новые кнопки настройки времени
+        keyboard.append([
+            InlineKeyboardButton(f"🕐 Отправка: {self.welcome_time} UTC", callback_data="timer_welcome"),
+            InlineKeyboardButton(f"🗑️ Удаление: {self.welcome_delete_time} UTC", callback_data="timer_welcome_delete")
+        ])
+        
         keyboard.append([InlineKeyboardButton(f"🎯 Целевая тема: {target_name}", callback_data="set_target_topic")])
         keyboard.append([InlineKeyboardButton(f"▶️ Статус: {status}", callback_data="toggle_welcome_mode")])
         keyboard.append([InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")])
@@ -616,8 +667,7 @@ class DailyMessageBot:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             "📅 **Ежедневные Приветствия**\n\n"
-            f"**Статус системы:** {status}\n"
-            f"Сообщения отправляются в **{self.welcome_time} UTC** и удаляются в **{self.welcome_delete_time} UTC**.",
+            f"**Статус системы:** {status}\n",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
@@ -639,6 +689,12 @@ class DailyMessageBot:
             if i + 1 < len(day_buttons):
                 row.append(day_buttons[i+1])
             keyboard.append(row)
+        
+        # Новые кнопки настройки времени
+        keyboard.append([
+            InlineKeyboardButton(f"🕐 Отправка: {self.welcome_time} UTC", callback_data="timer_welcome"),
+            InlineKeyboardButton(f"🗑️ Удаление: {self.welcome_delete_time} UTC", callback_data="timer_welcome_delete")
+        ])
 
         keyboard.append([InlineKeyboardButton(f"🎯 Целевая тема: {target_name}", callback_data="set_target_topic")])
         keyboard.append([InlineKeyboardButton(f"▶️ Статус: {status}", callback_data="toggle_welcome_mode")])
@@ -648,14 +704,13 @@ class DailyMessageBot:
         await self.bot.send_message(
             chat_id,
             "📅 **Ежедневные Приветствия**\n\n"
-            f"**Статус системы:** {status}\n"
-            f"Сообщения отправляются в **{self.welcome_time} UTC** и удаляются в **{self.welcome_delete_time} UTC**.",
+            f"**Статус системы:** {status}\n",
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
 
     async def _edit_daily_message_day_menu(self, query, day_index):
-        """Меню для настройки сообщения на конкретный день."""
+        """Меню для настройки сообщения на конкретный день (редактирование)."""
         day_name = self.get_day_name(day_index)
         current_message = self.daily_messages.get(str(day_index), "*Сообщение не задано.*")
         
@@ -683,7 +738,7 @@ class DailyMessageBot:
         )
 
     async def _edit_target_topic_menu(self, query):
-        """Меню выбора целевой темы для приветствий."""
+        """Меню выбора целевой темы для приветствий (редактирование)."""
         if not self.registered_topics:
             keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="back_daily")]]
             return await query.edit_message_text(
@@ -713,10 +768,13 @@ class DailyMessageBot:
         data = query.data
         
         # Очистка состояния ввода при нажатии навигационных кнопок
-        if data in ["back_main", "daily_messages", "back_monitor", "timers", "forbidden_words_menu"]:
+        if data in ["back_main", "daily_messages", "back_monitor", "timers", "forbidden_words_menu", "back_daily"]:
             context.user_data.pop('next_action', None)
             context.user_data.pop('day_index', None)
             context.user_data.pop('monitor_topic_name', None)
+            context.user_data.pop('timer_key', None)
+            context.user_data.pop('return_to_daily_menu', None)
+
 
         # --- НАВИГАЦИЯ ---
         if data == "back_main": return await self._edit_main_menu(query)
@@ -750,7 +808,8 @@ class DailyMessageBot:
                 self.save_data()
                 self.setup_schedulers()
                 await query.answer(f"🗑️ Сообщение для {day_name} удалено!", show_alert=True)
-            await self._edit_daily_message_day_menu(query, int(day_index))
+            # Возврат к меню выбора дней
+            return await self._edit_daily_messages_menu(query)
         
         elif data == "toggle_welcome_mode":
             self.welcome_mode = not self.welcome_mode
@@ -775,7 +834,7 @@ class DailyMessageBot:
                 await query.answer("❌ Ошибка: Тема не найдена.", show_alert=True)
             return await self._edit_daily_messages_menu(query)
         
-        # --- МЕНЮ ТАЙМЕРОВ (Общее) ---
+        # --- МЕНЮ ТАЙМЕРОВ (Общее + в меню Приветствий) ---
         elif data.startswith("timer_"):
             timer_key_map = {
                 'welcome': 'welcome_time',
@@ -787,6 +846,9 @@ class DailyMessageBot:
             if timer_key:
                 context.user_data['next_action'] = INPUT_STATE_TIME
                 context.user_data['timer_key'] = timer_key
+                # Устанавливаем флаг для возврата в меню Приветствий, если пришли оттуда
+                context.user_data['return_to_daily_menu'] = query.message.text.startswith("📅 **Ежедневные Приветствия**")
+                    
                 await query.edit_message_text(
                     "⏰ **Введите новое время в формате ЧЧ:ММ (UTC).**\n\n"
                     f"Текущее: {getattr(self, timer_key, 'N/A')}. Например: `09:30`.",
@@ -852,9 +914,8 @@ class DailyMessageBot:
             self.save_data()
             
             await self.bot.send_message(chat_id, f"✅ **Список запрещенных слов обновлен!** Всего слов: {len(words_list)}.", parse_mode='Markdown')
-            # Отправка временного сообщения для редактирования
-            temp_msg = await self.bot.send_message(chat_id, "Возврат в меню...")
-            return await self._edit_forbidden_words_menu(temp_msg.edit_text_obj)
+            # Возврат в меню Запрещенных Слов
+            return await self._send_forbidden_words_menu(chat_id)
 
         # --- Ввод ежедневного сообщения ---
         elif action == INPUT_STATE_DAILY_MESSAGE:
@@ -865,7 +926,8 @@ class DailyMessageBot:
             self.save_data()
             self.setup_schedulers()
             
-            await self.bot.send_message(chat_id, f"✅ **Сообщение для {day_name} успешно сохранено!**", parse_mode='Markdown')
+            await self.bot.send_message(chat_id, f"✅ **Сообщение для {day_name} успешно сохранено!**")
+            # Возврат в меню Ежедневных Приветствий
             return await self._send_daily_messages_menu(chat_id)
 
         # --- Ввод времени ---
@@ -873,7 +935,12 @@ class DailyMessageBot:
             
             if not re.fullmatch(r'\d{2}:\d{2}', user_input):
                 await update.message.reply_text("❌ Неверный формат. Используйте **ЧЧ:ММ** (например, `09:30`).")
+                # Сохраняем состояние для повторного ввода
                 context.user_data['next_action'] = action 
+                # Восстанавливаем другие ключи, если они были
+                if 'timer_key' in context.user_data: context.user_data['timer_key'] = context.user_data.get('timer_key') 
+                if 'monitor_topic_name' in context.user_data: context.user_data['monitor_topic_name'] = context.user_data.get('monitor_topic_name')
+                if 'return_to_daily_menu' in context.user_data: context.user_data['return_to_daily_menu'] = context.user_data.get('return_to_daily_menu')
                 return
 
             try:
@@ -881,13 +948,20 @@ class DailyMessageBot:
                 
                 if action == INPUT_STATE_TIME:
                     timer_key = context.user_data.pop('timer_key')
+                    return_to_daily_menu = context.user_data.pop('return_to_daily_menu', False)
+
                     setattr(self, timer_key, user_input)
                     self.save_data()
                     self.setup_schedulers()
                     await self.bot.send_message(chat_id, f"✅ **Время для `{timer_key.replace('_', ' ').replace('welcome', 'приветствия')}` обновлено на {user_input} UTC.**", parse_mode='Markdown')
-                    # Отправка временного сообщения для редактирования
-                    temp_msg = await self.bot.send_message(chat_id, "Возврат в меню времени...")
-                    return await self._edit_timers_menu(temp_msg.edit_text_obj) 
+                    
+                    if return_to_daily_menu:
+                        # Возврат в меню Ежедневных Приветствий
+                        return await self._send_daily_messages_menu(chat_id)
+                    else:
+                        # Возврат в Главное меню Таймеров
+                        await self.bot.send_message(chat_id, "✅ Время установлено.")
+                        return await self._send_timers_menu_from_input(chat_id) # Используем новую функцию для отправки НОВОГО меню времени
 
                 elif action == INPUT_STATE_CLEANUP_TIME:
                     topic_name = context.user_data.pop('monitor_topic_name')
@@ -896,14 +970,35 @@ class DailyMessageBot:
                         self.save_data()
                         self.setup_schedulers()
                         await self.bot.send_message(chat_id, f"✅ **Время очистки для '{topic_name}' обновлено на {user_input} UTC.**", parse_mode='Markdown')
-                        return await self._edit_monitored_topics_menu_after_input(chat_id)
+                        # Возврат в меню Мониторируемых Тем
+                        return await self._send_monitored_topics_menu(chat_id)
                     else:
                         await update.message.reply_text("❌ Ошибка: Тема мониторинга не найдена.")
 
             except ValueError:
                 await update.message.reply_text("❌ Некорректное время. Проверьте ЧЧ (00-23) и ММ (00-59).")
+                # Сохраняем состояние для повторного ввода
                 context.user_data['next_action'] = action
-    
+                if 'timer_key' in context.user_data: context.user_data['timer_key'] = context.user_data.get('timer_key')
+                if 'monitor_topic_name' in context.user_data: context.user_data['monitor_topic_name'] = context.user_data.get('monitor_topic_name')
+                if 'return_to_daily_menu' in context.user_data: context.user_data['return_to_daily_menu'] = context.user_data.get('return_to_daily_menu')
+                
+    async def _send_timers_menu_from_input(self, chat_id):
+        """Отправка нового сообщения меню Таймеров (после ввода времени)."""
+        keyboard = [
+            [InlineKeyboardButton(f"🕐 Отправка Приветствия: {self.welcome_time} UTC", callback_data="timer_welcome")],
+            [InlineKeyboardButton(f"🗑️ Удаление Приветствия: {self.welcome_delete_time} UTC", callback_data="timer_welcome_delete")],
+            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_main")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await self.bot.send_message(
+            chat_id,
+            "⏰ **Настройка времени (UTC)**\n\n"
+            "Установите время для **ежедневной отправки** и **удаления** приветственных сообщений.",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
     # -----------------------------------------------------------------
     # ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА
     # -----------------------------------------------------------------
